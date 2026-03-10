@@ -1,0 +1,27 @@
+{
+  "name": "stabilometer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm run --parallel dev",
+    "dev:client": "pnpm --filter @stabilometer/client dev",
+    "dev:server": "pnpm --filter @stabilometer/server dev",
+    "build": "pnpm run --parallel build",
+    "build:client": "pnpm --filter @stabilometer/client build",
+    "build:server": "pnpm --filter @stabilometer/server build",
+    "check": "pnpm --filter @stabilometer/client check",
+    "lint": "pnpm run --parallel lint",
+    "format": "prettier --write \"packages/*/src/**/*.{ts,svelte,css}\"",
+    "clean": "rm -rf packages/*/node_modules packages/*/.svelte-kit packages/*/dist"
+  },
+  "devDependencies": {
+    "prettier": "^3.2.5",
+    "prettier-plugin-svelte": "^3.2.2",
+    "typescript": "^5.4.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}

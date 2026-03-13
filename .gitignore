@@ -37,7 +37,7 @@ vite.config.*.timestamp-*
 .env.*.local
 .env.production
 *.env
-.PROJECT_KNOWLEDGE_BASE.md
+/PROJECT_KNOWLEDGE_BASE.md
 
 # === Calibration data (специфика проекта!) ===
 calibration.json

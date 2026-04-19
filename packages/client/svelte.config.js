@@ -1,18 +1,18 @@
-import adapter from '@sveltejs/adapter-auto';
-import { vitePreprocess } from '@sveltejs/vite-plugin-svelte'; // <--- ДОБАВИТЬ ЭТО
+import adapter from '@sveltejs/adapter-static';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
-	// Добавь эту строку, чтобы Svelte понимал TypeScript в .svelte файлах
-	preprocess: vitePreprocess(), 
+  preprocess: vitePreprocess(),
 
-	kit: {
-		adapter: adapter(),
-		// Если ты используешь alias в Vite, SvelteKit должен о них знать
-		alias: {
-			'@stabilometer/shared': '../shared/src'
-		}
-	}
+  kit: {
+    adapter: adapter({
+      fallback: 'index.html'
+    }),
+    alias: {
+      '@stabilometer/shared': '../shared/src'
+    }
+  }
 };
 
 export default config;

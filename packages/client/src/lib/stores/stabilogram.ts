@@ -1,3 +1,5 @@
+// packages/client/src/lib/stores/stabilogram.ts
+
 import { writable, derived, get } from 'svelte/store';
 import {
   RingBuffer,
@@ -14,6 +16,9 @@ const DEFAULT_CONFIG = {
   interpolationEnabled: true,
   maxSampleHistory: 500
 } as const;
+
+// ✅ ДОБАВЛЕНО: Предаллоцированный вектор для fallback (zero-GC)
+const ZERO_VELOCITY: Vector2D = { x: 0, y: 0 };
 
 interface StabilogramState {
   isWsConnected: boolean;
@@ -35,9 +40,8 @@ function createStabilogramStore() {
   let sampleHistory: RingBuffer<StabilogramSample> | null = null;
 
   let lastPacketTime = 0;
-  let packetTimes: number[] = []; // Для расчета packetRate
+  let packetTimes: number[] = [];
 
-  // Основной стор
   const state = writable<StabilogramState>({
     isWsConnected: false,
     isDeviceConnected: false,
@@ -60,7 +64,6 @@ function createStabilogramStore() {
     rotationDeg: 0
   });
 
-  // Инициализация при первом запуске
   function initialize(viewportSize: Vector2D): void {
     if (!kalmanFilter) {
       kalmanFilter = new KalmanFilter2D({ processNoise: 0.1, measurementNoise: 2 });
@@ -70,17 +73,14 @@ function createStabilogramStore() {
     }
   }
 
-  // Обработка входящего пакета
   function processSample(sample: StabilogramSample): void {
     const now = performance.now();
 
-    // Считаем пакеты в секунду
     packetTimes.push(now);
     packetTimes = packetTimes.filter(t => now - t < 1000);
     
     sampleHistory?.push(sample);
 
-    // Фильтрация
     let filteredPosition = sample.mm;
     if (kalmanFilter) {
       const dt = lastPacketTime > 0 ? (now - lastPacketTime) / 1000 : 0.02;
@@ -88,7 +88,6 @@ function createStabilogramStore() {
       filteredPosition = { x: res.x, y: res.y };
     }
 
-    // Интерполяция
     let interpolatedPosition = filteredPosition;
     if (interpolator) {
       interpolator.addSample(filteredPosition, now);
@@ -100,7 +99,6 @@ function createStabilogramStore() {
     
     lastPacketTime = now;
 
-    // Обновляем UI (батчинг Svelte сам сделает)
     state.update(s => ({
       ...s,
       currentSample: sample,
@@ -112,7 +110,6 @@ function createStabilogramStore() {
     }));
   }
 
-  // Получение позиции для рендера (вызывается в animation loop)
   function getRenderPosition(): Vector2D {
     if (interpolator) {
       return interpolator.getInterpolatedPosition();
@@ -120,7 +117,16 @@ function createStabilogramStore() {
     return get(state).filteredPosition;
   }
 
-  // Сеттеры для состояния
+  // ✅ ДОБАВЛЕНО: Получение скорости для render loop (zero-GC)
+  // Возвращает ссылку на внутренний мутируемый объект интерполятора.
+  // НЕ создаёт новый объект. Безопасно вызывать каждый кадр.
+  function getRenderVelocity(): Vector2D {
+    if (interpolator) {
+      return interpolator.getVelocity();
+    }
+    return ZERO_VELOCITY;
+  }
+
   function setCalibration(data: CalibrationData): void {
     calibrationStore.set(data);
     state.update(s => ({ ...s, isCalibrated: true }));
@@ -134,7 +140,6 @@ function createStabilogramStore() {
     state.update(s => ({ 
       ...s, 
       isWsConnected: connected,
-      // Если WS упал, устройство тоже считается отключенным
       isDeviceConnected: connected ? s.isDeviceConnected : false 
     }));
   }
@@ -142,7 +147,6 @@ function createStabilogramStore() {
   function setDeviceConnected(connected: boolean): void {
     state.update(s => ({ ...s, isDeviceConnected: connected }));
     if (!connected) {
-      // Сброс фильтров при отключении устройства
       kalmanFilter?.reset();
       interpolator?.reset();
     }
@@ -161,6 +165,7 @@ function createStabilogramStore() {
     initialize,
     processSample,
     getRenderPosition,
+    getRenderVelocity,   // ✅ ДОБАВЛЕНО
     setCalibration,
     setAxisConfig,
     setWsConnected,

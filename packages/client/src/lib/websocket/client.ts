@@ -89,8 +89,8 @@ export class StabilogramClient {
 
 			switch (msg.type) {
 				case 'DATA':
-					msg.data.clientTime = performance.now();
-					this.store?.processSample(msg.data);
+					const sample = { ...msg.data, clientTime: performance.now() };
+					this.store?.processSample(sample);
 					break;
 				case 'CALIBRATION_COMPLETE':
 					this.store?.setCalibration(msg.calibration);

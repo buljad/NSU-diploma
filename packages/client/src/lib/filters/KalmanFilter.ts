@@ -1,5 +1,4 @@
 // packages/client/src/lib/filters/KalmanFilter.ts
-// (Копируем содержимое из shared или импортируем, но для клиента лучше иметь свою копию)
 
 export class KalmanFilter2D {
   private state: Float64Array;
@@ -15,17 +14,23 @@ export class KalmanFilter2D {
   private K: Float64Array;
   private dt: number;
   private initialized: boolean = false;
+  
+  // ✅ ЗАЩИТА ОТ ВЫБРОСОВ
+  private lastPosition: { x: number; y: number } = { x: 0, y: 0 };
+  private outlierThreshold: number = 80; // мм
+  private maxVelocity: number = 600; // мм/с
 
   constructor(options: {
     processNoise?: number;
     measurementNoise?: number;
     dt?: number;
   } = {}) {
-    const processNoise = options.processNoise ?? 0.1;
-    const measurementNoise = options.measurementNoise ?? 2;
+    // ✅ УЛУЧШЕННЫЕ ПАРАМЕТРЫ
+    const processNoise = options.processNoise ?? 0.5;  // ✅ Было 0.1
+    const measurementNoise = options.measurementNoise ?? 1.0;  // ✅ Было 2.0
     this.dt = options.dt ?? 0.02;
 
-    this.state = new Float64Array([0, 0, 0, 0]);
+    this.state = new Float64Array([0, 0, 0, 0]); // [x, y, vx, vy]
 
     this.P = new Float64Array([
       1000, 0, 0, 0,
@@ -77,8 +82,22 @@ export class KalmanFilter2D {
     if (!this.initialized) {
       this.state[0] = measuredX;
       this.state[1] = measuredY;
+      this.state[2] = 0;
+      this.state[3] = 0;
+      this.lastPosition = { x: measuredX, y: measuredY };
       this.initialized = true;
       return this.getState();
+    }
+
+    // ✅ ДЕТЕКЦИЯ ВЫБРОСОВ
+    const deltaX = measuredX - this.lastPosition.x;
+    const deltaY = measuredY - this.lastPosition.y;
+    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    
+    let trustFactor = 1.0;
+    if (distance > this.outlierThreshold) {
+      trustFactor = this.outlierThreshold / distance;
+      console.warn(`🚨 Выброс ${distance.toFixed(1)}mm, доверие: ${trustFactor.toFixed(2)}`);
     }
 
     // Predict
@@ -87,14 +106,29 @@ export class KalmanFilter2D {
     this.state[0] = x;
     this.state[1] = y;
 
-    // Simplified update (for performance)
-    const kx = 0.3;
-    const ky = 0.3;
+    // ✅ АДАПТИВНАЯ КОРРЕКЦИЯ вместо констант
+    // Чем больше доверие к измерению, тем сильнее коррекция
+    const basePosGain = 0.2;
+    const baseVelGain = 0.1;
     
-    this.state[0] += kx * (measuredX - this.state[0]);
-    this.state[1] += ky * (measuredY - this.state[1]);
-    this.state[2] += kx * 0.5 * (measuredX - x) / this.dt;
-    this.state[3] += ky * 0.5 * (measuredY - y) / this.dt;
+    const posGain = basePosGain + (0.4 * trustFactor);  // 0.2-0.6
+    const velGain = baseVelGain + (0.2 * trustFactor);  // 0.1-0.3
+    
+    // Коррекция позиции
+    this.state[0] += posGain * (measuredX - this.state[0]);
+    this.state[1] += posGain * (measuredY - this.state[1]);
+    
+    // Коррекция скорости
+    this.state[2] += velGain * (measuredX - x) / this.dt;
+    this.state[3] += velGain * (measuredY - y) / this.dt;
+    
+    // ✅ ОГРАНИЧЕНИЕ СКОРОСТИ
+    this.state[2] = Math.max(-this.maxVelocity, Math.min(this.maxVelocity, this.state[2]));
+    this.state[3] = Math.max(-this.maxVelocity, Math.min(this.maxVelocity, this.state[3]));
+
+    // Обновляем последнюю позицию
+    this.lastPosition.x = this.state[0];
+    this.lastPosition.y = this.state[1];
 
     return this.getState();
   }
@@ -111,5 +145,6 @@ export class KalmanFilter2D {
   reset(): void {
     this.state.fill(0);
     this.initialized = false;
+    this.lastPosition = { x: 0, y: 0 };
   }
 }

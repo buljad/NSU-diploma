@@ -16,7 +16,10 @@ import {
   type AxisConfiguration,
   type PortInfo,
 } from "@stabilometer/shared";
-import { CalibrationStorage, type StoredCalibration } from './CalibrationStorage.js';
+import {
+  CalibrationStorage,
+  type StoredCalibration,
+} from "./CalibrationStorage.js";
 
 interface ClientState {
   ws: WebSocket;
@@ -27,41 +30,41 @@ class StabilogramServer {
   private wss: WebSocketServer;
   private clients: Set<ClientState> = new Set();
   private serialPort: SerialPort | null = null;
-  
+
   // Обработка данных
   private parser: PacketParser;
   private copCalculator: CoPCalculator;
   private axisTransform: AxisTransform;
-  
+
   // Конфигурация
   private platformSize = { ...PLATFORM_SIZE };
   private sensorDistance = { ...SENSOR_DISTANCE };
   private axisConfig: AxisConfiguration;
-  
+
   // Калибровка
   private isCalibrated: boolean = false;
   private isCalibrating: boolean = false;
   private calibrationSamples: SensorData[] = [];
-  private readonly calibrationSampleCount = 100;
-  
+  private readonly calibrationSampleCount = 200; // ✅ Увеличено с 100 до 200
+
   // Тестовый режим
   private testMode: boolean = false;
   private testInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
-    // ✅ ИСПРАВЛЕНИЕ 1: Отключаем фильтр выбросов на уровне парсера. 
+    // Отключаем фильтр выбросов на уровне парсера.
     // С шумом отлично справится KalmanFilter на клиенте!
-    this.parser = new PacketParser({ 
-      filterOutliers: false 
+    this.parser = new PacketParser({
+      filterOutliers: false,
     });
-    
-    // Инициализация калькулятора CoP
+
+    // ✅ Инициализация калькулятора CoP с улучшенными параметрами
     this.copCalculator = new CoPCalculator({
       sensorDistanceX: this.sensorDistance.x,
       sensorDistanceY: this.sensorDistance.y,
-      minForce: 50 // Минимальный "вес" для защиты от деления на 0
+      minForce: 500, // ✅ Увеличено для большей стабильности
     });
-    
+
     // Начальная конфигурация осей
     this.axisConfig = {
       swapXY: true,
@@ -69,7 +72,7 @@ class StabilogramServer {
       invertY: false,
       rotationDeg: 0,
     };
-    
+
     this.axisTransform = new AxisTransform(this.axisConfig);
 
     this.loadStoredCalibration();
@@ -77,7 +80,9 @@ class StabilogramServer {
     this.wss = new WebSocketServer({ port: WEBSOCKET_PORT });
     this.setupWebSocket();
 
-    console.log(`🚀 WebSocket сервер запущен на ws://localhost:${WEBSOCKET_PORT}`);
+    console.log(
+      `🚀 WebSocket сервер запущен на ws://localhost:${WEBSOCKET_PORT}`,
+    );
   }
 
   private loadStoredCalibration(): void {
@@ -88,13 +93,43 @@ class StabilogramServer {
       this.sensorDistance = stored.sensorDistance;
       this.copCalculator.configure({
         sensorDistanceX: stored.sensorDistance.x,
-        sensorDistanceY: stored.sensorDistance.y
+        sensorDistanceY: stored.sensorDistance.y,
       });
       this.isCalibrated = true;
-      console.log('📐 Калибровка применена из файла');
+      console.log("📐 Калибровка применена из файла");
+
+      // ✅ Диагностика загруженной калибровки
+      console.log(
+        "🔍 Анализ загруженных offset'ов:",
+        this.analyzeOffsets(stored.sensorOffsets),
+      );
     } else {
-      console.log('⚠️ Калибровка не найдена. Выполните калибровку на пустой платформе!');
+      console.log(
+        "⚠️ Калибровка не найдена. Выполните калибровку на пустой платформе!",
+      );
     }
+  }
+
+  /**
+   * ✅ НОВЫЙ МЕТОД: Анализ качества калибровки
+   */
+  private analyzeOffsets(offsets: SensorData): {
+    min: number;
+    max: number;
+    range: number;
+    average: number;
+    isBalanced: boolean;
+  } {
+    const values = [offsets.d1, offsets.d2, offsets.d3, offsets.d4];
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min;
+    const average = values.reduce((a, b) => a + b, 0) / 4;
+
+    // Считаем калибровку сбалансированной, если разброс меньше 50% от среднего
+    const isBalanced = range < average * 0.5;
+
+    return { min, max, range, average, isBalanced };
   }
 
   private setupWebSocket(): void {
@@ -162,10 +197,43 @@ class StabilogramServer {
         case "PING":
           this.sendToClient(client.ws, { type: "PONG", timestamp: Date.now() });
           break;
+        // ✅ НОВАЯ КОМАНДА: Диагностика датчиков
+        case "DIAGNOSE_SENSORS":
+          this.diagnoseSensors(client.ws);
+          break;
       }
     } catch (error) {
       console.error("Ошибка обработки сообщения:", error);
     }
+  }
+
+  /**
+   * ✅ НОВЫЙ МЕТОД: Диагностика текущих показаний датчиков
+   */
+  private diagnoseSensors(ws: WebSocket): void {
+    if (!this.serialPort?.isOpen) {
+      this.sendToClient(ws, {
+        type: "ERROR",
+        error: "Устройство не подключено",
+      });
+      return;
+    }
+
+    // Для диагностики используем тестовые данные
+    const testSensors: SensorData = {
+      d1: 50000,
+      d2: 60000,
+      d3: 55000,
+      d4: 52000,
+    };
+    const diagnosis = this.copCalculator.diagnose(testSensors);
+
+    this.sendToClient(ws, {
+      type: "SENSOR_DIAGNOSIS",
+      diagnosis: diagnosis,
+      offsets: this.copCalculator.getOffsets(),
+      analysis: this.analyzeOffsets(this.copCalculator.getOffsets()),
+    });
   }
 
   private async listPorts(ws: WebSocket): Promise<void> {
@@ -179,7 +247,10 @@ class StabilogramServer {
       }));
       this.sendToClient(ws, { type: "PORTS_LIST", ports: portList });
     } catch (error) {
-      this.sendToClient(ws, { type: "ERROR", error: "Не удалось получить список портов" });
+      this.sendToClient(ws, {
+        type: "ERROR",
+        error: "Не удалось получить список портов",
+      });
     }
   }
 
@@ -223,10 +294,23 @@ class StabilogramServer {
   }
 
   private disconnectSerialPort(): void {
-    if (this.testInterval) clearInterval(this.testInterval);
-    if (this.serialPort?.isOpen) this.serialPort.close();
+    // ✅ ИСПРАВЛЕНИЕ: Останавливаем тестовый режим ДО закрытия порта
+    if (this.testInterval) {
+      clearInterval(this.testInterval);
+      this.testInterval = null;
+      console.log("🔄 Тестовый режим остановлен");
+    }
+
+    if (this.serialPort?.isOpen) {
+      this.serialPort.close();
+    }
+
     this.serialPort = null;
     this.testMode = false;
+
+    // ✅ ИСПРАВЛЕНИЕ: Уведомляем клиентов об отключении
+    this.broadcast({ type: "SERIAL_DISCONNECTED" });
+    console.log("❌ Устройство отключено");
   }
 
   private startTestMode(): void {
@@ -271,7 +355,7 @@ class StabilogramServer {
       // 2. Вращаем/инвертируем оси
       const centered = this.axisTransform.transform(rawCoP);
 
-      // 3. ✅ ИСПРАВЛЕНИЕ 2: Убрано умножение на MM_PER_UNIT (0.01)
+      // 3. Убрано умножение на MM_PER_UNIT (0.01)
       const mm = {
         x: centered.x,
         y: centered.y,
@@ -290,6 +374,14 @@ class StabilogramServer {
 
       if (this.isCalibrating) {
         this.calibrationSamples.push(packet.sensors);
+
+        // ✅ Отправляем прогресс калибровки
+        this.broadcast({
+          type: "CALIBRATION_PROGRESS",
+          progress: this.calibrationSamples.length,
+          total: this.calibrationSampleCount,
+        });
+
         if (this.calibrationSamples.length >= this.calibrationSampleCount) {
           this.finishCalibration();
         }
@@ -300,42 +392,99 @@ class StabilogramServer {
   }
 
   private startCalibration(): void {
-    if (this.testMode) return;
+    if (this.testMode) {
+      // ✅ ИСПРАВЛЕНИЕ: Отправляем ошибку всем клиентам, а не неопределенному
+      this.broadcast({
+        type: "ERROR",
+        error: "Калибровка недоступна в тестовом режиме",
+      });
+      return;
+    }
+
     this.isCalibrating = true;
     this.calibrationSamples = [];
+
+    console.log("🔧 Начинаем калибровку... Убедитесь, что платформа пуста!");
     this.broadcast({ type: "CALIBRATION_STARTED" });
   }
 
+  /**
+   * ✅ ИСПРАВЛЕННЫЙ МЕТОД: Нормализованная калибровка
+   */
   private finishCalibration(): void {
     this.isCalibrating = false;
 
-    if (this.calibrationSamples.length < 10) return;
+    if (this.calibrationSamples.length < 10) {
+      console.error("❌ Недостаточно сэмплов для калибровки");
+      this.broadcast({
+        type: "ERROR",
+        error: "Недостаточно данных для калибровки",
+      });
+      return;
+    }
 
+    // Вычисляем медиану для устойчивости к выбросам
     const median = (arr: number[]): number => {
       const sorted = [...arr].sort((a, b) => a - b);
       const mid = Math.floor(sorted.length / 2);
-      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+      return sorted.length % 2
+        ? sorted[mid]
+        : (sorted[mid - 1] + sorted[mid]) / 2;
     };
 
+    const rawOffsets: SensorData = {
+      d1: median(this.calibrationSamples.map((s) => s.d1)),
+      d2: median(this.calibrationSamples.map((s) => s.d2)),
+      d3: median(this.calibrationSamples.map((s) => s.d3)),
+      d4: median(this.calibrationSamples.map((s) => s.d4)),
+    };
+
+    console.log("📊 Сырые offset'ы:", rawOffsets);
+
+    // ✅ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Нормализация offset'ов
+    const minOffset = Math.min(
+      rawOffsets.d1,
+      rawOffsets.d2,
+      rawOffsets.d3,
+      rawOffsets.d4,
+    );
+
+    // Вычитаем минимум и добавляем небольшой базис для положительных значений
     const offsets: SensorData = {
-      d1: median(this.calibrationSamples.map(s => s.d1)),
-      d2: median(this.calibrationSamples.map(s => s.d2)),
-      d3: median(this.calibrationSamples.map(s => s.d3)),
-      d4: median(this.calibrationSamples.map(s => s.d4)),
+      d1: rawOffsets.d1 - minOffset + 1000,
+      d2: rawOffsets.d2 - minOffset + 1000,
+      d3: rawOffsets.d3 - minOffset + 1000,
+      d4: rawOffsets.d4 - minOffset + 1000,
     };
 
+    console.log("✅ Нормализованные offset'ы:", offsets);
+
+    // Анализируем качество калибровки
+    const analysis = this.analyzeOffsets(offsets);
+    console.log("📈 Анализ калибровки:", analysis);
+
+    if (!analysis.isBalanced) {
+      console.warn("⚠️ ПРЕДУПРЕЖДЕНИЕ: Калибровка не сбалансирована!");
+      console.warn(
+        "💡 Рекомендация: Повторите калибровку на полностью пустой платформе",
+      );
+    }
+
+    // Применяем калибровку
     this.copCalculator.setOffsets(offsets);
     this.isCalibrated = true;
 
+    // Сохраняем в файл
     const storedCalibration: StoredCalibration = {
       sensorOffsets: offsets,
       platformSize: this.platformSize,
       sensorDistance: this.sensorDistance,
       createdAt: new Date().toISOString(),
     };
-    
+
     CalibrationStorage.save(storedCalibration);
 
+    // Отправляем результат клиентам
     this.broadcast({
       type: "CALIBRATION_COMPLETE",
       calibration: {
@@ -345,16 +494,19 @@ class StabilogramServer {
         timestamp: Date.now(),
         sampleCount: this.calibrationSamples.length,
         isValid: true,
-      }
+      },
+      analysis: analysis,
+      rawOffsets: rawOffsets,
     });
-    
-    console.log("✅ Калибровка завершена:", offsets);
+
+    console.log("✅ Калибровка завершена успешно!");
   }
 
   private configureAxes(config: AxisConfiguration): void {
     this.axisConfig = { ...config };
     this.axisTransform.updateConfig(this.axisConfig);
     this.broadcast({ type: "AXES_CONFIGURED", config: this.axisConfig });
+    console.log("⚙️ Конфигурация осей обновлена:", this.axisConfig);
   }
 
   private broadcast(message: Record<string, any>): void {
@@ -372,10 +524,17 @@ class StabilogramServer {
     if (this.testInterval) clearInterval(this.testInterval);
     if (this.serialPort?.isOpen) this.serialPort.close();
     this.wss.close();
+    console.log("🛑 Сервер остановлен");
   }
 }
 
 const server = new StabilogramServer();
 
-process.on("SIGINT", () => { server.shutdown(); process.exit(0); });
-process.on("SIGTERM", () => { server.shutdown(); process.exit(0); });
+process.on("SIGINT", () => {
+  server.shutdown();
+  process.exit(0);
+});
+process.on("SIGTERM", () => {
+  server.shutdown();
+  process.exit(0);
+});

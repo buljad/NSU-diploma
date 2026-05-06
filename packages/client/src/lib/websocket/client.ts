@@ -7,7 +7,6 @@ import {
 	type PortInfo
 } from '@stabilometer/shared';
 
-// Тип для нашего стора (чтобы TS не ругался)
 type StoreType = {
 	processSample: (s: StabilogramSample) => void;
 	setCalibration: (d: CalibrationData) => void;
@@ -24,10 +23,8 @@ export class StabilogramClient {
 	private intentionallyClosed = false;
 	private store: StoreType | null = null;
 
-	// Храним обработчики событий
 	private eventHandlers = new Map<string, ((data: unknown) => void)[]>();
 
-	// Метод для внедрения зависимости стора
 	setStore(store: any) {
 		this.store = store;
 	}
@@ -82,6 +79,7 @@ export class StabilogramClient {
 		setTimeout(() => this.connect().catch(console.error), this.reconnectInterval);
 	}
 
+	// ✅ ИСПРАВЛЕННЫЙ МЕТОД: Добавлена обработка событий калибровки
 	private handleMessage(data: string): void {
 		try {
 			const msg = JSON.parse(data);
@@ -92,26 +90,58 @@ export class StabilogramClient {
 					const sample = { ...msg.data, clientTime: performance.now() };
 					this.store?.processSample(sample);
 					break;
-				case 'CALIBRATION_COMPLETE':
-					this.store?.setCalibration(msg.calibration);
+					
+				// ✅ ДОБАВЛЕНО: Обработка событий калибровки
+				case 'CALIBRATION_STARTED':
+					console.log('🔧 Калибровка начата');
+					this.emit('CALIBRATION_STARTED', null);
 					break;
+					
+				case 'CALIBRATION_PROGRESS':
+					console.log('📊 Прогресс калибровки:', msg.progress, '/', msg.total);
+					this.emit('CALIBRATION_PROGRESS', {
+						progress: msg.progress,
+						total: msg.total
+					});
+					break;
+					
+				case 'CALIBRATION_COMPLETE':
+					console.log('✅ Калибровка завершена');
+					this.store?.setCalibration(msg.calibration);
+					this.emit('CALIBRATION_COMPLETE', msg.calibration);
+					break;
+					
 				case 'PORTS_LIST':
 					this.emit('PORTS_LIST', msg.ports);
 					break;
+					
 				case 'SERIAL_CONNECTED':
 					console.log('✅ Device Connected:', msg.port || 'Test Mode');
 					this.store?.setDeviceConnected(true);
+					this.emit('SERIAL_CONNECTED', msg);
 					break;
+					
 				case 'SERIAL_DISCONNECTED':
 					console.log('❌ Device Disconnected');
 					this.store?.setDeviceConnected(false);
+					this.emit('SERIAL_DISCONNECTED', null);
 					break;
+					
 				case 'CONNECTED':
 					this.store?.setDeviceConnected(!!msg.serialConnected);
+					if (msg.axisConfig) {
+						this.store?.setAxisConfig(msg.axisConfig);
+					}
+					this.emit('CONNECTED', msg);
 					break;
+					
 				case 'ERROR':
 					console.error('Server error:', msg.error);
+					this.emit('ERROR', msg.error);
 					break;
+					
+				default:
+					console.log('❓ Неизвестное сообщение:', msg.type);
 			}
 		} catch (e) {
 			console.error('Parse error:', e);
@@ -124,7 +154,6 @@ export class StabilogramClient {
 			return;
 		}
 
-		// Явное приведение к объекту для надежности
 		const message = JSON.stringify({
 			type,
 			...payload
@@ -135,18 +164,22 @@ export class StabilogramClient {
 
 	// Публичные методы API
 	connectToPort(portPath: string, baudRate = 115200, testMode = false) {
+		console.log(`📡 Подключение к ${testMode ? 'тестовому режиму' : 'порту: ' + portPath}`);
 		this.send('CONNECT', { portPath, baudRate, testMode });
 	}
 
 	disconnectFromPort() {
+		console.log('📡 Отключение от устройства');
 		this.send('DISCONNECT');
 	}
 
 	calibrateZero() {
+		console.log('🔧 Запуск калибровки нуля');
 		this.send('CALIBRATE_ZERO');
 	}
 
 	requestPorts() {
+		console.log('📋 Запрос списка портов');
 		this.send('LIST_PORTS');
 	}
 
@@ -155,7 +188,7 @@ export class StabilogramClient {
 		this.store?.setAxisConfig(config);
 	}
 
-	// Простая система событий
+	// ✅ УЛУЧШЕННАЯ система событий
 	on(event: string, callback: (data: unknown) => void) {
 		if (!this.eventHandlers.has(event)) {
 			this.eventHandlers.set(event, []);
@@ -175,6 +208,15 @@ export class StabilogramClient {
 		if (handlers) {
 			handlers.forEach((cb) => cb(data));
 		}
+	}
+
+	// ✅ ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ
+	getConnectionState(): boolean {
+		return this.ws?.readyState === WebSocket.OPEN;
+	}
+
+	clearAllEventHandlers(): void {
+		this.eventHandlers.clear();
 	}
 }
 

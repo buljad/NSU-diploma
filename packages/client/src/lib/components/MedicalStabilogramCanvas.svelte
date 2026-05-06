@@ -19,7 +19,6 @@
 	let stabilityScore = 0;
 	let averageSpeed = 0;
 	let totalDistance = 0;
-	let confidenceEllipseArea = 0;
 
 	// История для анализа
 	let positionHistory: Vector2D[] = [];
@@ -27,8 +26,8 @@
 	let sessionStartTime = 0;
 
 	// Зоны стабильности (в мм)
-	const comfortZone = 15; // Радиус зоны комфорта
-	const warningZone = 30; // Радиус зоны предупреждения
+	const comfortZone = 15;
+	const warningZone = 30;
 
 	$: position = $stabilogramStore.interpolatedPosition;
 	$: velocity = $stabilogramStore.velocity;
@@ -50,7 +49,6 @@
 		const renderPos = stabilogramStore.getRenderPosition();
 
 		if (medicalMode) {
-			// Обновляем медицинские метрики
 			updateMedicalMetrics(renderPos);
 		} else {
 			// ✅ ИСПРАВЛЕНИЕ: Обновляем trail для игрового режима
@@ -65,14 +63,11 @@
 	}
 
 	function updateMedicalMetrics(pos: Vector2D) {
-		// Добавляем в историю
 		positionHistory.push({ x: pos.x, y: pos.y });
 		if (positionHistory.length > 1000) {
-			// Ограничиваем историю
 			positionHistory.shift();
 		}
 
-		// Вычисляем пройденное расстояние
 		if (lastPosition) {
 			const distance = Math.sqrt(
 				Math.pow(pos.x - lastPosition.x, 2) + Math.pow(pos.y - lastPosition.y, 2)
@@ -81,8 +76,7 @@
 		}
 		lastPosition = { x: pos.x, y: pos.y };
 
-		// Средняя скорость за последние 5 секунд
-		const recentHistory = positionHistory.slice(-250); // ~5 сек при 50Hz
+		const recentHistory = positionHistory.slice(-250);
 		if (recentHistory.length > 1) {
 			let recentDistance = 0;
 			for (let i = 1; i < recentHistory.length; i++) {
@@ -92,17 +86,15 @@
 				);
 				recentDistance += d;
 			}
-			averageSpeed = (recentDistance / 5) * 50; // мм/с
+			averageSpeed = (recentDistance / 5) * 50;
 		}
 
-		// Оценка стабильности (0-100)
 		const distanceFromCenter = Math.sqrt(pos.x * pos.x + pos.y * pos.y);
-		const speedFactor = Math.min(averageSpeed / 50, 1); // Нормализация
+		const speedFactor = Math.min(averageSpeed / 50, 1);
 		stabilityScore = Math.max(0, 100 - distanceFromCenter * 2 - speedFactor * 30);
 	}
 
 	function draw(pos: Vector2D) {
-		// Медицинская тема - белый фон
 		ctx.fillStyle = medicalMode ? '#ffffff' : '#0f0f1a';
 		ctx.fillRect(0, 0, width, height);
 
@@ -116,7 +108,6 @@
 			drawPatientPosition(cx + pos.x * scale, cy - pos.y * scale);
 			drawMedicalMetrics();
 		} else {
-			// Старый игровой стиль
 			drawGameGrid(cx, cy);
 			drawGameTrail(cx, cy);
 			drawGameCharacter(cx + pos.x * scale, cy - pos.y * scale);
@@ -129,7 +120,6 @@
 		ctx.strokeStyle = '#e5e7eb';
 		ctx.lineWidth = 1;
 
-		// Сетка каждые 10мм
 		const spacing = 10 * scale;
 		for (let x = cx % spacing; x < width; x += spacing) {
 			ctx.beginPath();
@@ -144,7 +134,6 @@
 			ctx.stroke();
 		}
 
-		// Главные оси
 		ctx.strokeStyle = '#9ca3af';
 		ctx.lineWidth = 2;
 		ctx.beginPath();
@@ -154,7 +143,6 @@
 		ctx.lineTo(width, cy);
 		ctx.stroke();
 
-		// Подписи осей
 		ctx.fillStyle = '#6b7280';
 		ctx.font = '12px Arial';
 		ctx.textAlign = 'center';
@@ -168,7 +156,6 @@
 	}
 
 	function drawStabilityZones(cx: number, cy: number) {
-		// Зона комфорта (зеленая)
 		ctx.strokeStyle = '#10b981';
 		ctx.fillStyle = 'rgba(16, 185, 129, 0.1)';
 		ctx.lineWidth = 2;
@@ -177,7 +164,6 @@
 		ctx.fill();
 		ctx.stroke();
 
-		// Зона предупреждения (желтая)
 		ctx.strokeStyle = '#f59e0b';
 		ctx.fillStyle = 'rgba(245, 158, 11, 0.05)';
 		ctx.lineWidth = 2;
@@ -186,7 +172,6 @@
 		ctx.fill();
 		ctx.stroke();
 
-		// Подписи зон
 		ctx.fillStyle = '#10b981';
 		ctx.font = '11px Arial';
 		ctx.fillText(`Зона комфорта (${comfortZone}мм)`, cx + comfortZone * scale + 10, cy);
@@ -223,28 +208,24 @@
 		const distanceFromCenter =
 			Math.sqrt(Math.pow(x - width / 2, 2) + Math.pow(y - height / 2, 2)) / scale;
 
-		// Цвет зависит от зоны
-		let color = '#ef4444'; // Красный - опасная зона
+		let color = '#ef4444';
 		if (distanceFromCenter <= comfortZone) {
-			color = '#10b981'; // Зеленый - зона комфорта
+			color = '#10b981';
 		} else if (distanceFromCenter <= warningZone) {
-			color = '#f59e0b'; // Желтый - зона предупреждения
+			color = '#f59e0b';
 		}
 
-		// Основная точка
 		ctx.fillStyle = color;
 		ctx.beginPath();
 		ctx.arc(x, y, 8, 0, Math.PI * 2);
 		ctx.fill();
 
-		// Обводка
 		ctx.strokeStyle = '#ffffff';
 		ctx.lineWidth = 2;
 		ctx.beginPath();
 		ctx.arc(x, y, 8, 0, Math.PI * 2);
 		ctx.stroke();
 
-		// Перекрестие для точности
 		ctx.strokeStyle = color;
 		ctx.lineWidth = 1;
 		ctx.beginPath();
@@ -330,22 +311,23 @@
 		}
 	}
 
+	// ✅ ИСПРАВЛЕНИЕ: Используем trail вместо positionHistory
 	function drawGameTrail(cx: number, cy: number) {
-		if (positionHistory.length < 2) return;
+		if (trail.length < 2) return;
 
 		ctx.lineCap = 'round';
 		ctx.lineJoin = 'round';
 
-		for (let i = 1; i < positionHistory.length; i++) {
-			const alpha = (i / positionHistory.length) * 0.8;
-			const lw = 1 + (i / positionHistory.length) * 3;
+		for (let i = 1; i < trail.length; i++) {
+			const alpha = (i / trail.length) * 0.8;
+			const lw = 1 + (i / trail.length) * 3;
 
 			ctx.beginPath();
 			ctx.strokeStyle = `rgba(74,158,255,${alpha})`;
 			ctx.lineWidth = lw;
 
-			const prev = positionHistory[i - 1];
-			const curr = positionHistory[i];
+			const prev = trail[i - 1];
+			const curr = trail[i];
 
 			ctx.moveTo(cx + prev.x * scale, cy - prev.y * scale);
 			ctx.lineTo(cx + curr.x * scale, cy - curr.y * scale);
@@ -403,11 +385,12 @@
 		const lines = [
 			`Position: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}) mm`,
 			`Scale: ${scale.toFixed(1)} px/mm`,
-			`Status: ${isConnected ? 'Connected' : 'Disconnected'}`
+			`Mode: ${medicalMode ? 'Medical' : 'Game'}`,
+			`Trail: ${trail.length} points`
 		];
 
 		lines.forEach((line, i) => {
-			ctx.fillText(line, width - 250, height - 60 + i * 15);
+			ctx.fillText(line, 10, height - 60 + i * 15);
 		});
 	}
 
@@ -422,14 +405,16 @@
 		averageSpeed = 0;
 		totalDistance = 0;
 		positionHistory = [];
+		trail = [];
 		lastPosition = null;
 		sessionStartTime = performance.now();
 	}
 
-	// Экспорт данных
+	// ✅ ИСПРАВЛЕНИЕ: Убираем двоеточия из имени файла
 	export function exportSessionData() {
 		const data = {
 			positionHistory,
+			trail,
 			metrics: {
 				stabilityScore,
 				averageSpeed,
@@ -444,10 +429,14 @@
 
 		const a = document.createElement('a');
 		a.href = url;
-		a.download = `stabilogram_${new Date().toISOString().slice(0, 19)}.json`;
+		// ✅ ИСПРАВЛЕНИЕ: Заменяем двоеточия на дефисы для Windows
+		a.download = `stabilogram_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
+		document.body.appendChild(a);
 		a.click();
+		document.body.removeChild(a);
 
 		URL.revokeObjectURL(url);
+		console.log('Данные экспортированы:', data);
 	}
 </script>
 

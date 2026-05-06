@@ -2,7 +2,7 @@
 <script lang="ts">
   import { wsClient } from '../websocket/client';
   import { stabilogramStore } from '../stores/stabilogram';
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   
   const dispatch = createEventDispatcher();
   
@@ -11,41 +11,96 @@
   let isCalibrating = false;
   let calibrationProgress = 0;
   
+  // ✅ Переменные для отслеживания подключений
+  let unsubscribers: (() => void)[] = [];
+  
   $: isConnected = $stabilogramStore.isWsConnected;
   $: isDeviceConnected = $stabilogramStore.isDeviceConnected;
   $: isCalibrated = $stabilogramStore.isCalibrated;
   
-  // Запрашиваем порты при загрузке
-  wsClient.on('PORTS_LIST', (ports: any) => {
-    availablePorts = ports;
-    if (ports.length > 0 && !selectedPort) {
-      selectedPort = ports[0].path;
-    }
+  onMount(() => {
+    setupEventHandlers();
+    // Запрашиваем порты при загрузке
+    setTimeout(() => {
+      wsClient.requestPorts();
+    }, 500);
   });
   
+  onDestroy(() => {
+    // Очищаем подписки
+    unsubscribers.forEach(unsub => unsub());
+  });
+  
+  function setupEventHandlers() {
+    // ✅ ИСПРАВЛЕНИЕ: Обработка списка портов
+    const unsubPorts = wsClient.on('PORTS_LIST', (ports: any) => {
+      console.log('Получены порты:', ports);
+      availablePorts = Array.isArray(ports) ? ports : [];
+      if (availablePorts.length > 0 && !selectedPort) {
+        selectedPort = availablePorts[0].path;
+      }
+    });
+    
+    // ✅ ИСПРАВЛЕНИЕ: Обработка завершения калибровки
+    const unsubCalibration = wsClient.on('CALIBRATION_COMPLETE', (data: any) => {
+      console.log('Калибровка завершена:', data);
+      isCalibrating = false;
+      calibrationProgress = 100;
+      
+      // Сбрасываем прогресс через 2 секунды
+      setTimeout(() => {
+        calibrationProgress = 0;
+      }, 2000);
+    });
+    
+    // ✅ ИСПРАВЛЕНИЕ: Обработка начала калибровки
+    const unsubCalibStart = wsClient.on('CALIBRATION_STARTED', () => {
+      console.log('Калибровка начата');
+      isCalibrating = true;
+      calibrationProgress = 0;
+    });
+    
+    // ✅ ИСПРАВЛЕНИЕ: Обработка прогресса калибровки
+    const unsubCalibProgress = wsClient.on('CALIBRATION_PROGRESS', (data: any) => {
+      if (data && typeof data.progress === 'number' && typeof data.total === 'number') {
+        calibrationProgress = (data.progress / data.total) * 100;
+      }
+    });
+    
+    // Сохраняем функции отписки
+    unsubscribers.push(unsubPorts, unsubCalibration, unsubCalibStart, unsubCalibProgress);
+  }
+  
   function requestPorts() {
+    console.log('Запрос портов...');
     wsClient.requestPorts();
   }
   
   function connectDevice() {
     if (selectedPort) {
+      console.log('Подключение к порту:', selectedPort);
       wsClient.connectToPort(selectedPort, 115200, false);
     }
   }
   
   function startTestMode() {
+    console.log('Запуск тестового режима');
     wsClient.connectToPort('', 115200, true);
   }
   
   function startCalibration() {
-    if (isDeviceConnected) {
+    if (isDeviceConnected && !isCalibrating) {
+      console.log('Запуск калибровки');
       wsClient.calibrateZero();
-      isCalibrating = true;
+      // isCalibrating будет установлено через событие CALIBRATION_STARTED
     }
   }
   
   function disconnectDevice() {
+    console.log('Отключение устройства');
     wsClient.disconnectFromPort();
+    isCalibrating = false;
+    calibrationProgress = 0;
   }
   
   function exportData() {
@@ -125,6 +180,16 @@
       </div>
     {/if}
     
+    <!-- ✅ УЛУЧШЕНИЕ: Прогресс калибровки -->
+    {#if isCalibrating}
+      <div class="calibration-progress">
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: {calibrationProgress}%"></div>
+        </div>
+        <span class="progress-text">{Math.round(calibrationProgress)}%</span>
+      </div>
+    {/if}
+    
     <button 
       on:click={startCalibration}
       disabled={!isDeviceConnected || isCalibrating}
@@ -152,6 +217,17 @@
       </button>
     </div>
   </div>
+  
+  <!-- ✅ ОТЛАДОЧНАЯ ПАНЕЛЬ (временная) -->
+  {#if false}
+    <div class="debug-section">
+      <h4>Отладка</h4>
+      <small>WS: {isConnected ? '✓' : '✗'}</small><br>
+      <small>Device: {isDeviceConnected ? '✓' : '✗'}</small><br>
+      <small>Calibrated: {isCalibrated ? '✓' : '✗'}</small><br>
+      <small>Ports: {availablePorts.length}</small>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -254,10 +330,54 @@
     font-weight: bold;
   }
 
+  /* ✅ НОВЫЕ СТИЛИ: Прогресс калибровки */
+  .calibration-progress {
+    margin-bottom: 12px;
+  }
+
+  .progress-bar {
+    width: 100%;
+    height: 6px;
+    background: #f3f4f6;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 4px;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #3b82f6, #1d4ed8);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+
+  .progress-text {
+    font-size: 12px;
+    color: #6b7280;
+  }
+
   .recording-controls {
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .debug-section {
+    border-top: 1px solid #eee;
+    padding-top: 12px;
+    margin-top: 12px;
+  }
+
+  .debug-section h4 {
+    margin: 0 0 8px 0;
+    font-size: 12px;
+    color: #666;
+  }
+
+  .debug-section small {
+    font-size: 11px;
+    color: #888;
+    line-height: 1.4;
   }
 
   /* Кнопки */

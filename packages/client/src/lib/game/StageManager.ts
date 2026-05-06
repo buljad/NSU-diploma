@@ -91,7 +91,7 @@ export class StageManager {
   // Приватное состояние
   // ════════════════════════════════════════════════
 
-  private config: StageConfig = STAGE_CONFIGS[STAGE_1];
+  config: StageConfig = STAGE_CONFIGS[STAGE_1];
   private difficulty: DifficultyPreset = DIFFICULTY_PRESETS[1]; // DIFF_MEDIUM
 
   private canvasWidth: number;

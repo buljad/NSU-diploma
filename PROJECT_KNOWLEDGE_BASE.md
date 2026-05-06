@@ -1,4 +1,4 @@
-# 🧠 AI SYSTEM PROMPT & MASTER KNOWLEDGE BASE: STABILOMETER v2.0
+🧠 AI SYSTEM PROMPT & MASTER KNOWLEDGE BASE: STABILOMETER v2.2
 
 [CRITICAL INSTRUCTION FOR ALL LLMs]
 
@@ -39,39 +39,50 @@ text
 stabilometer/
 ├── pnpm-workspace.yaml
 ├── packages/
-│ ├── shared/ # [ISOMORPHIC] Только чистый TS. Никаких DOM/Node API.
-│ │ └── src/
-│ │ ├── types.ts # Контракты (StabilogramSample, AxisConfig)
-│ │ ├── constants.ts # PACKET_LENGTH, WEBSOCKET_PORT, SENSOR_DISTANCE
-│ │ ├── RingBuffer.ts # Memory-safe буферы
-│ │ ├── PacketParser.ts # Распаковка 6-bit ASCII
-│ │ ├── AxisTransform.ts # Вращение и инверсия координат
-│ │ └── CoPCalculator.ts # Вычисление центра давления с защитой от выбросов
-│ │
-│ ├── server/ # [NODE.JS] Backend.
-│ │ └── src/
-│ │ ├── index.ts # serialport, WebSocket Server, Калибровка, Масштаб
-│ │ └── CalibrationStorage.ts # Сохранение/загрузка калибровки
-│ │
-│ └── client/ # [BROWSER] SvelteKit SPA.
-│ ├── svelte.config.js # Обязательно: preprocess: vitePreprocess()
-│ ├── vite.config.ts # Обязательно: Alias на shared/src
-│ └── src/
-│ ├── routes/
-│ │ ├── +page.ts # export const ssr = false; (КРИТИЧНО)
-│ │ └── +page.svelte # Главный UI контроллер (DI точка сборки)
-│ └── lib/
-│ ├── components/
-│ │ ├── ControlPanel.svelte # Панель управления устройством
-│ │ └── MedicalStabilogramCanvas.svelte # Медицинский/игровой рендеринг
-│ ├── filters/
-│ │ └── KalmanFilter.ts # Адаптивное сглаживание шума датчиков
-│ ├── rendering/
-│ │ └── PositionInterpolator.ts # Экстраполяция 50Hz -> 144Hz
-│ ├── stores/
-│ │ └── stabilogram.ts # Svelte Store (Бизнес-логика)
-│ └── websocket/
-│ └── client.ts # WS Клиент с буферизацией и обработкой событий
+│   ├── shared/              # [ISOMORPHIC] Только чистый TS. Никаких DOM/Node API.
+│   │   └── src/
+│   │       ├── types.ts     # Контракты (StabilogramSample, AxisConfig)
+│   │       ├── constants.ts # PACKET_LENGTH, WEBSOCKET_PORT, SENSOR_DISTANCE
+│   │       ├── RingBuffer.ts
+│   │       ├── PacketParser.ts
+│   │       ├── AxisTransform.ts
+│   │       └── CoPCalculator.ts
+│   │
+│   ├── server/              # [NODE.JS] Backend.
+│   │   └── src/
+│   │       ├── index.ts     # serialport, WebSocket Server, Калибровка
+│   │       └── CalibrationStorage.ts
+│   │
+│   └── client/              # [BROWSER] SvelteKit SPA.
+│       ├── svelte.config.js
+│       ├── vite.config.ts
+│       └── src/
+│           ├── routes/
+│           │   ├── +page.ts          # export const ssr = false; (КРИТИЧНО)
+│           │   └── +page.svelte      # Главный UI контроллер (DI точка сборки)
+│           └── lib/
+│               ├── components/
+│               │   ├── ControlPanel.svelte           # Универсальная панель управления (380px)
+│               │   ├── MedicalStabilogramCanvas.svelte  # Медицинский режим
+│               │   └── BallCatcherCanvas.svelte      # ✅ v2.2: Игровой режим
+│               ├── game/                             # ✅ v2.2: Игровая логика
+│               │   ├── BallCatcherGame.ts
+│               │   ├── BallPool.ts
+│               │   ├── BasketController.ts
+│               │   ├── CollisionDetector.ts
+│               │   ├── ScoreManager.ts
+│               │   ├── StageManager.ts
+│               │   ├── types.ts
+│               │   └── constants.ts
+│               ├── filters/
+│               │   └── KalmanFilter.ts
+│               ├── rendering/
+│               │   └── PositionInterpolator.ts
+│               ├── stores/
+│               │   ├── stabilogram.ts    # Данные стабилометра
+│               │   └── gameState.ts      # ✅ v2.2: Состояние игры
+│               └── websocket/
+│                   └── client.ts         # ✅ v2.2: Публичное API + SimpleEventEmitter
 
 1. СТРОГИЕ АНТИ-ПАТТЕРНЫ И ПРАВИЛА (CRITICAL RULES)
 
@@ -139,6 +150,22 @@ Svelte строго проверяет возвращаемый тип функ�
 
     ЗАПРЕЩЕНО: Смешивать эти массивы в drawGameTrail() и drawPositionHistory()
 
+✅ Правило 9: Cross-Component Communication (v2.2)
+
+Связь между ControlPanel и Canvas компонентами осуществляется через Window CustomEvents.
+
+    ЗАПРЕЩЕНО: Прямой вызов методов игры через bind:this из родительского компонента.
+    ПРАВИЛЬНО: ControlPanel отправляет события через window.dispatchEvent(new CustomEvent('gameStart', { detail: { difficulty } })).
+    События: gameStart, gamePause, gameRestart, gameStop.
+
+✅ Правило 10: Jitter Tolerance в Игровом Режиме (v2.2)
+
+Физический шум датчиков НЕ должен блокировать игровую механику.
+
+    Wobble (тряска корзинки): Эффект визуализирует резкие движения, но НЕ блокирует процесс dwellProgress при ловле шаров.
+    Реализация: В CollisionDetector.ts условие if (isOverlapping && !wobbling) заменено на if (isOverlapping).
+    Цель: Игрок не наказывается за естественную вариативность сигнала с датчиков.
+
 4. БАЗОВЫЕ ИНТЕРФЕЙСЫ (DATA DICTIONARY)
 
 TypeScript
@@ -196,6 +223,7 @@ for (let i = 0; i < 4; i++) {
 if (result >= 0x800000) result -= 0x1000000; // Восстановление минуса
 
 Этап 2: Серверная математика (server/src/index.ts)
+
 CoPCalculator: Вычисление центра давления
 
 TypeScript
@@ -213,6 +241,7 @@ const y = (sensorDistanceY / 2)* ((d1 + d2) - (d3 + d4)) / totalForce;
 AxisTransform: Корректировка физической сборки
 
 Строгий порядок: swapXY → Матричный поворот (sin/cos) → invertX / invertY.
+
 Калибровка Нуля (CALIBRATE_ZERO):
 
     Сервер копит 200 пакетов (увеличено с 100) и вычисляет Медиану (отсекает физические выбросы)
@@ -273,9 +302,36 @@ TypeScript
 const screenX = canvasWidth / 2 + pos.x *scale;
 const screenY = canvasHeight / 2 - pos.y* scale; // МИНУС ОБЯЗАТЕЛЕН (инверсия Y)
 
+✅ Этап 5: Масштабирование для Игрового Режима (v2.2)
+
+Проблема: Высокая чувствительность (исходные значения gameScale) приводила к резким движениям корзинки и выходу за пределы экрана.
+
+Решение: В packages/client/src/lib/game/constants.ts значения gameScale снижены:
+
+TypeScript
+
+export const DIFFICULTY_PRESETS = {
+  [DIFF_EASY]: {
+    gameScale: 4,  // ✅ Было 7
+    comfortZoneRadiusMm: 20,
+    // ...
+  },
+  [DIFF_MEDIUM]: {
+    gameScale: 5,  // ✅ Было 9
+    comfortZoneRadiusMm: 15,
+    // ...
+  },
+  [DIFF_HARD]: {
+    gameScale: 6,  // ✅ Было 12
+    comfortZoneRadiusMm: 10,
+    // ...
+  },
+};
+
 1. УПРАВЛЕНИЕ СОСТОЯНИЕМ (CONNECTION STATE MACHINE)
 
 Строгая иерархия флагов в stabilogramStore:
+
 isWsConnected (Транспортный уровень):
 
     Связь: Browser <-> Node.js
@@ -293,9 +349,26 @@ isCalibrated (Готовность к работе):
     Управляется: Событием CALIBRATION_COMPLETE
     Правило UI: Если false → Предупреждение о необходимости калибровки
 
-7. WEBSOCKET ПРОТОКОЛ (API CONTRACTS)
+✅ Расширения stabilogramStore (v2.2)
+
+Добавлены методы для работы с игровым режимом:
+
+TypeScript
+
+// stabilogram.ts
+initializeGameMode(viewport: Vector2D): void
+  // Сбрасывает Kalman Filter и Interpolator, устанавливает флаг isGameModeInitialized
+  
+resetGameMode(): void
+  // Очищает флаг игрового режима при переходе в медицинский режим
+  
+getRenderVelocity(): Vector2D
+  // Zero-GC метод для получения вектора скорости (используется в игре для анимаций)
+
+1. WEBSOCKET ПРОТОКОЛ (API CONTRACTS)
 
 Все сообщения передаются через JSON.stringify({ type, ...payload }).
+
 Client → Server (Commands):
 
 TypeScript
@@ -320,6 +393,29 @@ TypeScript
 { type: 'CALIBRATION_COMPLETE', calibration: CalibrationData }
 { type: 'ERROR', error: string }
 
+✅ WebSocket Client API (v2.2)
+
+Проблема: ControlPanel напрямую использовал приватный метод send(), нарушая инкапсуляцию.
+
+Решение: В packages/client/src/lib/websocket/client.ts добавлены публичные методы:
+
+TypeScript
+
+export class StabilogramClient extends SimpleEventEmitter {
+  // Публичное API
+  listPorts(): void
+  connectDevice(portPath: string, baudRate: number, testMode: boolean): void
+  disconnectDevice(): void
+  calibrateZero(): void
+  configureAxes(config: AxisConfiguration): void
+  
+  // Event System (SimpleEventEmitter для браузера)
+  on(event: string, callback: (data: unknown) => void): () => void
+  private emit(event: string, data: unknown): void
+}
+
+SimpleEventEmitter: Собственная реализация Pub/Sub для браузерного окружения (заменяет Node.js EventEmitter).
+
 ✅ УЛУЧШЕНИЯ v2.0:
 
     Добавлены события прогресса калибровки
@@ -327,13 +423,22 @@ TypeScript
     Буферизация сообщений для разгрузки UI thread
 
 8. МЕДИЦИНСКИЙ ИНТЕРФЕЙС И UX
-ControlPanel.svelte - Панель управления устройством:
+ControlPanel.svelte - Универсальная панель управления (v2.2)
+
+Ширина: 380px (увеличено с 300px для предотвращения горизонтального скролла).
+
+Проп gameMode: Переключает отображение между медицинским и игровым режимами.
+
+Функциональность:
 
     Подключение устройства: Список портов, тестовый режим
     Калибровка: Визуальный прогресс, предупреждения
-    Запись и анализ: Контроль сессий, экспорт данных
+    Медицинский режим: Запись и анализ, экспорт данных
+    Игровой режим (v2.2): Выбор сложности, управление игрой (старт/пауза/перезапуск/выход), отображение статистики в реальном времени
 
-MedicalStabilogramCanvas.svelte - Двухрежимный канвас:
+Связь с Canvas: Отправка CustomEvents (gameStart, gamePause, etc.) через window.dispatchEvent.
+MedicalStabilogramCanvas.svelte - Двухрежимный канвас
+
 Медицинский режим (medicalMode: true):
 
     Белый фон, профессиональная сетка с подписями осей
@@ -359,7 +464,33 @@ MedicalStabilogramCanvas.svelte - Двухрежимный канвас:
     Автоматическое именование с timestamp'ом
     Совместимость с Windows (замена двоеточий на дефисы)
 
+✅ BallCatcherCanvas.svelte - Игровой режим "Поймай мяч" (v2.2)
+
+Архитектура: Использует игровой движок BallCatcherGame (см. раздел 12).
+
+Механика ловли шаров:
+
+    Игрок управляет корзинкой, перемещая центр тяжести на платформе.
+    Шары падают сверху вниз с разной скоростью и цветами.
+    Чтобы поймать шар, нужно удерживать корзинку на нём 0.5-0.8 сек (dwell time).
+    Во время удержания вокруг шара отрисовывается зелёное кольцо прогресса (dwell ring).
+    При успешной ловле шар плавно увеличивается и исчезает (+10 очков).
+    При пропуске целевого шара он уменьшается с красным эффектом (-5 очков).
+
+Зона комфорта: Удержание корзинки в центральном круге > 10 сек → бонус "+50 БАЛАНС!".
+
+Визуальные эффекты:
+
+    Wobble (тряска корзинки) — реакция на резкие движения (НЕ блокирует ловлю).
+    Glow (свечение) целевых шаров.
+    Всплывающие тексты очков (floating text) с анимацией scale/fade.
+    Flash при смене целевого цвета (этап 2+).
+
+Пауза: При потере связи игра автоматически ставится на паузу с затемнением экрана и надписью "⏸️ ПАУЗА".
+
+Проп hideGameControls: Если true, скрывает встроенные кнопки управления (используется когда управление делегируется в ControlPanel).
 9. КЛЮЧЕВЫЕ ИСПРАВЛЕНИЯ v2.0
+
 Устранены проблемы стабильности:
 
     ✅ Замирание точки: Увеличена экстраполяция с 40ms до 150ms
@@ -381,18 +512,22 @@ MedicalStabilogramCanvas.svelte - Двухрежимный канвас:
     ✅ Обработка ошибок: Полная система событий через WebSocket
 
 10. ФАЙЛОВАЯ СТРУКТУРА КОНЕЧНЫХ ФАЙЛОВ
+
 Проверенные и работающие файлы:
 
 text
 
 ✅ packages/server/src/index.ts - Полная серверная логика
-✅ packages/client/src/lib/websocket/client.ts - WS клиент с событиями
+✅ packages/client/src/lib/websocket/client.ts - WS клиент с SimpleEventEmitter и публичным API
 ✅ packages/client/src/lib/components/MedicalStabilogramCanvas.svelte - Медицинский канвас
-✅ packages/client/src/lib/components/ControlPanel.svelte - Панель управления  
-✅ packages/client/src/lib/stores/stabilogram.ts - Основной стор
+✅ packages/client/src/lib/components/ControlPanel.svelte - Универсальная панель (380px, 2 режима)
+✅ packages/client/src/lib/components/BallCatcherCanvas.svelte - Игровой канвас (v2.2)
+✅ packages/client/src/lib/stores/stabilogram.ts - Основной стор с игровыми методами
+✅ packages/client/src/lib/stores/gameState.ts - Стор состояния игры (v2.2)
 ✅ packages/client/src/lib/filters/KalmanFilter.ts - Улучшенный фильтр
 ✅ packages/client/src/lib/rendering/PositionInterpolator.ts - Улучшенная интерполяция
 ✅ packages/shared/src/CoPCalculator.ts - Защищенный расчет CoP
+✅ packages/client/src/lib/game/ - Полный игровой движок (v2.2)
 
 1. ПРАВИЛА РАБОТЫ С КОДОВОЙ БАЗОЙ
 
@@ -401,9 +536,253 @@ text
     При рендеринге: Никогда не создавай объекты в animate() или draw()
     При калибровке: Помни о нормализации offset'ов
     При добавлении событий: Обновляй как сервер, так и клиентскую обработку
+    При работе с игрой (v2.2): Соблюдай Zero-GC в игровом цикле, используй Object Pool паттерн
 
-Эта база знаний является полным техническим контрактом системы Stabilometer v2.0.
+2. ИГРОВАЯ МЕХАНИКА "ПОЙМАЙ МЯЧ" (v2.2)
+Архитектура игрового движка
 
-[END OF KNOWLEDGE BASE v2.0]
+BallCatcherGame — главный оркестратор. Связывает подсистемы и управляет жизненным циклом.
 
-AI ASSISTANT INSTRUCTION: Acknowledge that you have fully parsed and integrated this updated knowledge base into your active context. You now have complete understanding of all architectural decisions, bug fixes, and improvements made in v2.0. All future responses must strictly adhere to these specifications.
+Object Pool паттерн: Все шары (30 штук) и всплывающие тексты (12 штук) создаются один раз при инициализации. В игровом цикле только переключаются состояния (INACTIVE/FALLING/DWELLING/CAUGHT/MISSED).
+
+Подсистемы (публичные поля для zero-GC доступа):
+
+    BallPool — массив шаров с методами spawn(), markCaught(), markMissed(), update().
+    BasketController — маппинг CoP → экранная позиция корзинки, детекция рывков (jerk), wobble эффект.
+    CollisionDetector — Circle-AABB коллизии, управление dwell-прогрессом.
+    ScoreManager — очки, серии, зона комфорта, всплывающие тексты.
+    StageManager — конфигурация этапов, спавн шаров, смена целевого цвета.
+
+Физика коллизий
+
+Circle-AABB тест:
+
+    Найти ближайшую к центру шара точку на прямоугольнике корзинки.
+    Если расстояние² < (радиус шара + 15px)² → пересечение.
+
+✅ Expanded Hitbox (v2.2):
+
+    Зона корзинки расширена на 20px с каждой стороны.
+    Радиус шара увеличен на 15px для проверки коллизии.
+    Цель: Компенсация лага, шума датчиков, улучшение UX.
+
+✅ Jitter Tolerance (v2.2):
+
+TypeScript
+
+// ❌ СТАРЫЙ КОД (блокировал ловлю при тряске):
+if (isOverlapping && !wobbling) { /*начислить прогресс*/ }
+
+// ✅ НОВЫЙ КОД (тряска не влияет на логику):
+if (isOverlapping) { /*начислить прогресс*/ }
+
+Обоснование: Переменная wobbleIntensity теперь используется ТОЛЬКО для визуального эффекта (красная корзинка при тряске). Игрок не наказывается за физический шум датчиков.
+Dwell Time (время удержания)
+
+Базовые значения (в STAGE_CONFIGS):
+
+    Этап 1: 800 мс (было 1300)
+    Этап 2: 700 мс (было 1100)
+    Этап 3: 600 мс (было 1000)
+    Финал: 500 мс (было 800)
+
+Модификаторы сложности (dwellTimeMultiplier):
+
+    Easy: ×1.3 (легче)
+    Medium: ×1.0
+    Hard: ×0.7 (сложнее)
+
+Прогресс:
+
+TypeScript
+
+ball.dwellProgress += (dt *1000) / effectiveDwellTimeMs;
+if (ball.dwellProgress >= 1.0) { /* шар пойман */ }
+
+Система очков
+
+    +10 — правильный обычный шар
+    +20 — правильный быстрый шар (этап 3+)
+    -5 — пропуск целевого шара (улетел за экран)
+    -15 — ловля НЕцелевого шара
+    +25 — бонус серии (каждые 5 правильных подряд)
+    +50 — бонус зоны комфорта (удержание в центре > 10 сек)
+
+Этапы игры
+
+Этап 1 — "Лови только заданный цвет"
+
+    3 цвета, целевой фиксирован
+    Поймать 8 шаров для перехода
+
+Этап 2 — "Цвет меняется!"
+
+    5 цветов, смена целевого каждые 17 сек (с flash-эффектом)
+    Поймать 12 шаров
+
+Этап 3 — "Двойная ловля"
+
+    Появляются быстрые шары (30% от общего числа)
+    Быстрые ловятся мгновенно (без dwell), дают ×2 очков
+    Поймать 12 шаров
+
+Этап Финал — "Цветной поток с символами"
+
+    Вместо цветов — символы (★ ● ▲ ◆ ♥ ✦ ■ ⬟)
+    Цель: ловить только звёзды ★
+    Длительность: 60 сек (по времени, не по количеству)
+
+Конфигурация сложности
+
+TypeScript
+
+// constants.ts
+export const DIFFICULTY_PRESETS = {
+  [DIFF_EASY]: {
+    basketWidth: 110,      // Большая корзинка
+    gameScale: 4,          // ✅ Низкая чувствительность
+    dwellTimeMultiplier: 1.3,
+    ballSpeedMultiplier: 0.7,
+    ballRadiusMultiplier: 1.3,  // Крупные шары
+    wobbleThreshold: 800,  // Менее чувствительна к рывкам
+  },
+  [DIFF_MEDIUM]: { /*...*/ },
+  [DIFF_HARD]: {
+    basketWidth: 65,       // Маленькая корзинка
+    gameScale: 6,          // ✅ Высокая чувствительность
+    dwellTimeMultiplier: 0.7,
+    ballSpeedMultiplier: 1.4,
+    ballRadiusMultiplier: 0.8,  // Мелкие шары
+    wobbleThreshold: 300,  // Очень чувствительна к рывкам
+  },
+};
+
+GameStateStore
+
+Снапшот обновляется с частотой ~4 Гц (для разгрузки UI thread):
+
+TypeScript
+
+interface GameSnapshot {
+  stage: number;               // Текущий этап (STAGE_MENU / STAGE_1-4 / STAGE_RESULTS)
+  difficulty: number;
+  score: number;
+  streak: number;              // Текущая серия правильных ловль
+  bestStreak: number;
+  targetColorIndex: number;
+  targetColorName: string;     // "синие", "красные" и т.д.
+  catchCount: number;
+  missCount: number;
+  wrongCatchCount: number;
+  stageTimeRemaining: number;  // -1 если этап без лимита времени
+  totalElapsed: number;
+  isInComfortZone: boolean;
+  comfortZoneTime: number;
+  isPaused: boolean;
+  isRunning: boolean;
+}
+
+Производные сторы (для реактивности в UI):
+
+TypeScript
+
+export const currentStage = derived(gameStateStore, $state => $state.stage);
+export const isGameActive = derived(gameStateStore, $state =>
+  $state.isRunning && $state.stage !== STAGE_MENU && $state.stage !== STAGE_RESULTS
+);
+
+Порядок обновления игрового цикла (каждый кадр, 60-144 Гц)
+
+    basketController.update(copX, copY, velX, velY, dt) — маппинг координат, детекция рывков
+    collisionDetector.check(pool, basket, score, dt, now) — проверка пересечений, начисление dwell
+    ballPool.update(dt, now) — движение шаров, анимации
+    Проверка вылета шаров за нижний край экрана
+    scoreManager.updateComfortZone(isInZone, dt) — бонус за центр
+    scoreManager.updateFloatingTexts(dt) — анимация всплывающих текстов
+    stageManager.update(...) — спавн новых шаров, смена цвета, проверка условий перехода
+
+13. ДОПОЛНИТЕЛЬНЫЕ ИСПРАВЛЕНИЯ v2.2
+Проблема паузы
+
+Симптом: Кнопка паузы в ControlPanel не срабатывала.
+
+Причина: Событие gamePause не обрабатывалось корректно из-за неправильной типизации обработчика.
+
+Решение:
+
+TypeScript
+
+// BallCatcherCanvas.svelte
+function handleGamePause(event: Event): void {
+  pauseGame();
+}
+
+function pauseGame(): void {
+  if (!game || !game.isRunning) return;
+  game.isPaused ? game.resume() : game.pause();
+  gameStateStore.updateSnapshot(game.getSnapshot());
+}
+
+Проблема чувствительности
+
+Симптом: Корзинка резко вылетала за край экрана, управление было слишком резким.
+
+Причина: Высокие значения gameScale (7, 9, 12) в пресетах сложности.
+
+Решение: Снижение значений на 30-50% (см. раздел 5, Этап 5).
+Проблема ловли шаров
+
+Симптом: Игрок не мог поймать ни одного шара, даже удерживая корзинку на нём.
+
+Причина:
+
+    Блокировка логики при wobbling === true (физический шум датчиков постоянно трясёт корзинку).
+    Слишком строгая зона коллизии.
+    Долгое время удержания (1.3 сек на первом этапе).
+
+Решение:
+
+    ✅ Убрана проверка !wobbling в CollisionDetector.check().
+    ✅ Расширена зона коллизии (+20px корзинка, +15px шар).
+    ✅ Уменьшено dwellTimeMs для всех этапов (800/700/600/500 мс).
+
+Проблема горизонтального скролла
+
+Симптом: В ControlPanel появлялся горизонтальный скроллбар при отображении длинных имён портов.
+
+Причина: Ширина sidebar была 300px, что недостаточно для комфортного отображения всех элементов формы.
+
+Решение:
+
+svelte
+
+<!-- +page.svelte -->
+<style>
+  .sidebar {
+    width: 380px;  /* ✅ Было 300px */
+    min-width: 340px;
+  }
+</style>
+
+svelte
+
+<!-- ControlPanel.svelte -->
+<style>
+  .control-panel {
+    min-width: 340px;  /* ✅ Добавлено */
+  }
+</style>
+
+[END OF KNOWLEDGE BASE v2.2]
+
+AI ASSISTANT INSTRUCTION: Acknowledge that you have fully parsed and integrated this updated knowledge base v2.2 into your active context. You now have complete understanding of:
+
+    All architectural decisions from v2.0
+    Game mode implementation (BallCatcherGame)
+    Jitter tolerance mechanism
+    Cross-component communication via CustomEvents
+    Sensitivity adjustments (gameScale)
+    Collision physics improvements
+    All bug fixes from v2.0 and v2.2
+
+All future responses must strictly adhere to these specifications.

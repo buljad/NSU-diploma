@@ -8,15 +8,7 @@
 //   Никакой конкатенации строк, никаких template literals в draw().
 // ────────────────────────────────────────────────────────────
 
-import {
-  STAGE_1,
-  STAGE_2,
-  STAGE_3,
-  STAGE_FINAL,
-  DIFF_EASY,
-  DIFF_MEDIUM,
-  DIFF_HARD,
-} from './types';
+import { STAGE_1, STAGE_2, STAGE_3, STAGE_FINAL, DIFF_EASY, DIFF_MEDIUM, DIFF_HARD } from './types';
 
 import type { StageConfig, DifficultyPreset } from './types';
 
@@ -30,38 +22,38 @@ import type { StageConfig, DifficultyPreset } from './types';
  * Это чтение из массива — zero-GC.
  */
 export const BALL_FILL_COLORS: readonly string[] = [
-  '#FF6B6B',   // 0: Красный
-  '#4ECDC4',   // 1: Бирюзовый
-  '#FFE66D',   // 2: Жёлтый
-  '#74B9FF',   // 3: Синий
-  '#A8E6CF',   // 4: Зелёный
-  '#6C5CE7',   // 5: Фиолетовый
-  '#FDCB6E',   // 6: Оранжевый
-  '#FF8B94',   // 7: Розовый
+	'#FF6B6B', // 0: Красный
+	'#4ECDC4', // 1: Бирюзовый
+	'#FFE66D', // 2: Жёлтый
+	'#74B9FF', // 3: Синий
+	'#A8E6CF', // 4: Зелёный
+	'#6C5CE7', // 5: Фиолетовый
+	'#FDCB6E', // 6: Оранжевый
+	'#FF8B94' // 7: Розовый
 ];
 
 /** Цвета обводки шаров (темнее fill на ~20%) */
 export const BALL_STROKE_COLORS: readonly string[] = [
-  '#D94F4F',   // 0: Красный
-  '#3BA89E',   // 1: Бирюзовый
-  '#D4BD4A',   // 2: Жёлтый
-  '#5A94CC',   // 3: Синий
-  '#7FBF9E',   // 4: Зелёный
-  '#5649B9',   // 5: Фиолетовый
-  '#CAA258',   // 6: Оранжевый
-  '#D96B77',   // 7: Розовый
+	'#D94F4F', // 0: Красный
+	'#3BA89E', // 1: Бирюзовый
+	'#D4BD4A', // 2: Жёлтый
+	'#5A94CC', // 3: Синий
+	'#7FBF9E', // 4: Зелёный
+	'#5649B9', // 5: Фиолетовый
+	'#CAA258', // 6: Оранжевый
+	'#D96B77' // 7: Розовый
 ];
 
 /** Цвета свечения шаров (для glow-эффекта, более прозрачные) */
 export const BALL_GLOW_COLORS: readonly string[] = [
-  'rgba(255,107,107,0.3)',
-  'rgba(78,205,196,0.3)',
-  'rgba(255,230,109,0.3)',
-  'rgba(116,185,255,0.3)',
-  'rgba(168,230,207,0.3)',
-  'rgba(108,92,231,0.3)',
-  'rgba(253,203,110,0.3)',
-  'rgba(255,139,148,0.3)',
+	'rgba(255,107,107,0.3)',
+	'rgba(78,205,196,0.3)',
+	'rgba(255,230,109,0.3)',
+	'rgba(116,185,255,0.3)',
+	'rgba(168,230,207,0.3)',
+	'rgba(108,92,231,0.3)',
+	'rgba(253,203,110,0.3)',
+	'rgba(255,139,148,0.3)'
 ];
 
 /**
@@ -69,14 +61,14 @@ export const BALL_GLOW_COLORS: readonly string[] = [
  * Доступ: BALL_COLOR_NAMES[targetColorIndex]
  */
 export const BALL_COLOR_NAMES: readonly string[] = [
-  'красные',
-  'бирюзовые',
-  'жёлтые',
-  'синие',
-  'зелёные',
-  'фиолетовые',
-  'оранжевые',
-  'розовые',
+	'красные',
+	'бирюзовые',
+	'жёлтые',
+	'синие',
+	'зелёные',
+	'фиолетовые',
+	'оранжевые',
+	'розовые'
 ];
 
 /** Общее количество доступных цветов */
@@ -91,14 +83,14 @@ export const TOTAL_COLORS = BALL_FILL_COLORS.length;
  * На финале цвет НЕ определяет цель — только символ.
  */
 export const BALL_SYMBOLS: readonly string[] = [
-  '★',   // 0: Звезда (целевой по умолчанию)
-  '●',   // 1: Круг
-  '▲',   // 2: Треугольник
-  '◆',   // 3: Ромб
-  '♥',   // 4: Сердце
-  '✦',   // 5: Четырёхконечная звезда
-  '■',   // 6: Квадрат
-  '⬟',   // 7: Пятиугольник
+	'★', // 0: Звезда (целевой по умолчанию)
+	'●', // 1: Круг
+	'▲', // 2: Треугольник
+	'◆', // 3: Ромб
+	'♥', // 4: Сердце
+	'✦', // 5: Четырёхконечная звезда
+	'■', // 6: Квадрат
+	'⬟' // 7: Пятиугольник
 ];
 
 /** Индекс целевого символа на финальном этапе */
@@ -234,11 +226,11 @@ export const POINTS_ZONE_BONUS = 50;
  *   [4] = ZONE_BONUS (голубой)
  */
 export const SCORE_TEXT_COLORS: readonly string[] = [
-  '#2ecc71',           // catch
-  '#95a5a6',           // miss
-  '#e74c3c',           // wrong
-  '#f1c40f',           // streak
-  '#74b9ff',           // zone bonus
+	'#2ecc71', // catch
+	'#95a5a6', // miss
+	'#e74c3c', // wrong
+	'#f1c40f', // streak
+	'#74b9ff' // zone bonus
 ];
 
 /** Скорость всплытия текста очков (px/s, вверх) */
@@ -329,77 +321,77 @@ export const RESULTS_BODY_FONT = '20px sans-serif';
  *   ballRadius = BALL_DEFAULT_RADIUS  ×  difficulty.ballRadiusMultiplier
  */
 export const STAGE_CONFIGS: Readonly<Record<number, StageConfig>> = {
-  [STAGE_1]: {
-    stage: STAGE_1,
-    maxActiveBalls: 3,
-    ballSpeedMin: 55,
-    ballSpeedMax: 90,
-    spawnIntervalMs: 2800,
-    colorCount: 3,
-    targetColorFixed: true,
-    colorChangeIntervalMs: 0,
-    dwellTimeMs: 1300,
-    hasFastBalls: false,
-    fastBallRatio: 0,
-    fastBallSpeedMultiplier: 1,
-    useSymbols: false,
-    catchesToAdvance: 8,
-    durationMs: 0,
-  },
+	[STAGE_1]: {
+		stage: STAGE_1,
+		maxActiveBalls: 3,
+		ballSpeedMin: 55,
+		ballSpeedMax: 90,
+		spawnIntervalMs: 2800,
+		colorCount: 3,
+		targetColorFixed: true,
+		colorChangeIntervalMs: 0,
+		dwellTimeMs: 800,
+		hasFastBalls: false,
+		fastBallRatio: 0,
+		fastBallSpeedMultiplier: 1,
+		useSymbols: false,
+		catchesToAdvance: 8,
+		durationMs: 0
+	},
 
-  [STAGE_2]: {
-    stage: STAGE_2,
-    maxActiveBalls: 4,
-    ballSpeedMin: 75,
-    ballSpeedMax: 130,
-    spawnIntervalMs: 2200,
-    colorCount: 5,
-    targetColorFixed: false,
-    colorChangeIntervalMs: 17_000,
-    dwellTimeMs: 1100,
-    hasFastBalls: false,
-    fastBallRatio: 0,
-    fastBallSpeedMultiplier: 1,
-    useSymbols: false,
-    catchesToAdvance: 12,
-    durationMs: 0,
-  },
+	[STAGE_2]: {
+		stage: STAGE_2,
+		maxActiveBalls: 4,
+		ballSpeedMin: 75,
+		ballSpeedMax: 130,
+		spawnIntervalMs: 2200,
+		colorCount: 5,
+		targetColorFixed: false,
+		colorChangeIntervalMs: 17_000,
+		dwellTimeMs: 700,
+		hasFastBalls: false,
+		fastBallRatio: 0,
+		fastBallSpeedMultiplier: 1,
+		useSymbols: false,
+		catchesToAdvance: 12,
+		durationMs: 0
+	},
 
-  [STAGE_3]: {
-    stage: STAGE_3,
-    maxActiveBalls: 5,
-    ballSpeedMin: 90,
-    ballSpeedMax: 160,
-    spawnIntervalMs: 1900,
-    colorCount: 4,
-    targetColorFixed: true,
-    colorChangeIntervalMs: 0,
-    dwellTimeMs: 1000,
-    hasFastBalls: true,
-    fastBallRatio: 0.3,
-    fastBallSpeedMultiplier: 2.2,
-    useSymbols: false,
-    catchesToAdvance: 12,
-    durationMs: 0,
-  },
+	[STAGE_3]: {
+		stage: STAGE_3,
+		maxActiveBalls: 5,
+		ballSpeedMin: 90,
+		ballSpeedMax: 160,
+		spawnIntervalMs: 1900,
+		colorCount: 4,
+		targetColorFixed: true,
+		colorChangeIntervalMs: 0,
+		dwellTimeMs: 600,
+		hasFastBalls: true,
+		fastBallRatio: 0.3,
+		fastBallSpeedMultiplier: 2.2,
+		useSymbols: false,
+		catchesToAdvance: 12,
+		durationMs: 0
+	},
 
-  [STAGE_FINAL]: {
-    stage: STAGE_FINAL,
-    maxActiveBalls: 7,
-    ballSpeedMin: 110,
-    ballSpeedMax: 190,
-    spawnIntervalMs: 1300,
-    colorCount: 6,
-    targetColorFixed: false,
-    colorChangeIntervalMs: 12_000,
-    dwellTimeMs: 800,
-    hasFastBalls: true,
-    fastBallRatio: 0.2,
-    fastBallSpeedMultiplier: 1.8,
-    useSymbols: true,
-    catchesToAdvance: 0,
-    durationMs: 60_000,
-  },
+	[STAGE_FINAL]: {
+		stage: STAGE_FINAL,
+		maxActiveBalls: 7,
+		ballSpeedMin: 110,
+		ballSpeedMax: 190,
+		spawnIntervalMs: 1300,
+		colorCount: 6,
+		targetColorFixed: false,
+		colorChangeIntervalMs: 12_000,
+		dwellTimeMs: 500,
+		hasFastBalls: true,
+		fastBallRatio: 0.2,
+		fastBallSpeedMultiplier: 1.8,
+		useSymbols: true,
+		catchesToAdvance: 0,
+		durationMs: 60_000
+	}
 };
 
 // ============================================================
@@ -407,44 +399,44 @@ export const STAGE_CONFIGS: Readonly<Record<number, StageConfig>> = {
 // ============================================================
 
 export const DIFFICULTY_PRESETS: Readonly<Record<number, DifficultyPreset>> = {
-  [DIFF_EASY]: {
-    label: 'Легко',
-    basketWidth: 110,
-    basketHeight: 50,
-    dwellTimeMultiplier: 1.3,
-    ballSpeedMultiplier: 0.7,
-    ballRadiusMultiplier: 1.3,
-    wobbleThreshold: 800,
-    wobbleDecayRate: 4.5,
-    gameScale: 7,
-    comfortZoneRadiusMm: 20,
-  },
+	[DIFF_EASY]: {
+		label: 'Легко',
+		basketWidth: 110,
+		basketHeight: 50,
+		dwellTimeMultiplier: 1.3,
+		ballSpeedMultiplier: 0.7,
+		ballRadiusMultiplier: 1.3,
+		wobbleThreshold: 800,
+		wobbleDecayRate: 4.5,
+		gameScale: 4, // ✅ УМЕНЬШЕНО с 7 до 4
+		comfortZoneRadiusMm: 20
+	},
 
-  [DIFF_MEDIUM]: {
-    label: 'Средне',
-    basketWidth: 85,
-    basketHeight: 42,
-    dwellTimeMultiplier: 1.0,
-    ballSpeedMultiplier: 1.0,
-    ballRadiusMultiplier: 1.0,
-    wobbleThreshold: 500,
-    wobbleDecayRate: 3.0,
-    gameScale: 9,
-    comfortZoneRadiusMm: 15,
-  },
+	[DIFF_MEDIUM]: {
+		label: 'Средне',
+		basketWidth: 85,
+		basketHeight: 42,
+		dwellTimeMultiplier: 1.0,
+		ballSpeedMultiplier: 1.0,
+		ballRadiusMultiplier: 1.0,
+		wobbleThreshold: 500,
+		wobbleDecayRate: 3.0,
+		gameScale: 5, // ✅ УМЕНЬШЕНО с 9 до 5
+		comfortZoneRadiusMm: 15
+	},
 
-  [DIFF_HARD]: {
-    label: 'Сложно',
-    basketWidth: 65,
-    basketHeight: 36,
-    dwellTimeMultiplier: 0.7,
-    ballSpeedMultiplier: 1.4,
-    ballRadiusMultiplier: 0.8,
-    wobbleThreshold: 300,
-    wobbleDecayRate: 2.0,
-    gameScale: 12,
-    comfortZoneRadiusMm: 10,
-  },
+	[DIFF_HARD]: {
+		label: 'Сложно',
+		basketWidth: 65,
+		basketHeight: 36,
+		dwellTimeMultiplier: 0.7,
+		ballSpeedMultiplier: 1.4,
+		ballRadiusMultiplier: 0.8,
+		wobbleThreshold: 300,
+		wobbleDecayRate: 2.0,
+		gameScale: 6, // ✅ УМЕНЬШЕНО с 12 до 6
+		comfortZoneRadiusMm: 10
+	}
 };
 
 // ============================================================
@@ -460,10 +452,10 @@ export const DIFFICULTY_PRESETS: Readonly<Record<number, DifficultyPreset>> = {
  * Второй вариант (fallback) создаст строку, но это edge case.
  */
 export const PRECOMPUTED_SCORE_TEXTS: ReadonlyMap<number, string> = new Map([
-  [POINTS_CATCH,        `+${POINTS_CATCH}`],
-  [POINTS_CATCH_FAST,   `+${POINTS_CATCH_FAST}`],
-  [POINTS_MISS,         `${POINTS_MISS}`],
-  [POINTS_WRONG,        `${POINTS_WRONG}`],
-  [POINTS_STREAK_BONUS, `+${POINTS_STREAK_BONUS} СЕРИЯ!`],
-  [POINTS_ZONE_BONUS,   `+${POINTS_ZONE_BONUS} БАЛАНС!`],
+	[POINTS_CATCH, `+${POINTS_CATCH}`],
+	[POINTS_CATCH_FAST, `+${POINTS_CATCH_FAST}`],
+	[POINTS_MISS, `${POINTS_MISS}`],
+	[POINTS_WRONG, `${POINTS_WRONG}`],
+	[POINTS_STREAK_BONUS, `+${POINTS_STREAK_BONUS} СЕРИЯ!`],
+	[POINTS_ZONE_BONUS, `+${POINTS_ZONE_BONUS} БАЛАНС!`]
 ]);

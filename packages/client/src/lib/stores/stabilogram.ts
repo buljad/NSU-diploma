@@ -42,6 +42,10 @@ function createStabilogramStore() {
   let lastPacketTime = 0;
   let packetTimes: number[] = [];
 
+  // ✅ ДОБАВЛЕНО: Флаги режимов для предотвращения конфликтов
+  let isInitialized = false;
+  let isGameModeInitialized = false;
+
   const state = writable<StabilogramState>({
     isWsConnected: false,
     isDeviceConnected: false,
@@ -65,15 +69,54 @@ function createStabilogramStore() {
   });
 
   function initialize(viewportSize: Vector2D): void {
-    if (!kalmanFilter) {
-      kalmanFilter = new KalmanFilter2D({ processNoise: 0.1, measurementNoise: 2 });
-      interpolator = new PositionInterpolator();
-      sampleHistory = new RingBuffer(DEFAULT_CONFIG.maxSampleHistory);
-      console.log('✅ Stabilogram store initialized');
+    if (isInitialized) {
+      console.log('📊 Stabilogram store already initialized, skipping...');
+      return;
     }
+
+    kalmanFilter = new KalmanFilter2D({ processNoise: 0.1, measurementNoise: 2 });
+    interpolator = new PositionInterpolator();
+    sampleHistory = new RingBuffer(DEFAULT_CONFIG.maxSampleHistory);
+    
+    isInitialized = true;
+    console.log('✅ Stabilogram store initialized for medical mode');
+  }
+
+  // ✅ НОВАЯ ФУНКЦИЯ: Специальная инициализация для игрового режима
+  function initializeGameMode(viewportSize: Vector2D): void {
+    if (!isInitialized) {
+      // Базовая инициализация не была выполнена
+      initialize(viewportSize);
+    }
+    
+    if (isGameModeInitialized) {
+      console.log('🎮 Game mode already initialized, skipping...');
+      return;
+    }
+
+    // Сброс фильтров для игрового режима (если нужно)
+    if (kalmanFilter) {
+      kalmanFilter.reset();
+    }
+    if (interpolator) {
+      interpolator.reset();
+    }
+
+    isGameModeInitialized = true;
+    console.log('✅ Stabilogram store initialized for game mode');
+  }
+
+  function resetGameMode(): void {
+    isGameModeInitialized = false;
+    console.log('🔄 Game mode reset');
   }
 
   function processSample(sample: StabilogramSample): void {
+    if (!isInitialized) {
+      console.warn('⚠️ Trying to process sample before initialization');
+      return;
+    }
+
     const now = performance.now();
 
     packetTimes.push(now);
@@ -117,9 +160,6 @@ function createStabilogramStore() {
     return get(state).filteredPosition;
   }
 
-  // ✅ ДОБАВЛЕНО: Получение скорости для render loop (zero-GC)
-  // Возвращает ссылку на внутренний мутируемый объект интерполятора.
-  // НЕ создаёт новый объект. Безопасно вызывать каждый кадр.
   function getRenderVelocity(): Vector2D {
     if (interpolator) {
       return interpolator.getVelocity();
@@ -163,9 +203,11 @@ function createStabilogramStore() {
   return {
     subscribe: state.subscribe,
     initialize,
+    initializeGameMode,      // ✅ НОВОЕ
+    resetGameMode,           // ✅ НОВОЕ
     processSample,
     getRenderPosition,
-    getRenderVelocity,   // ✅ ДОБАВЛЕНО
+    getRenderVelocity,
     setCalibration,
     setAxisConfig,
     setWsConnected,
@@ -175,7 +217,10 @@ function createStabilogramStore() {
     calibration: { subscribe: calibrationStore.subscribe },
     axisConfig: { subscribe: axisConfigStore.subscribe },
     isReady: derived(state, s => s.isDeviceConnected && s.isCalibrated),
-    position: derived(state, s => s.interpolatedPosition)
+    position: derived(state, s => s.interpolatedPosition),
+    
+    // ✅ НОВЫЕ ГЕТТЕРЫ
+    get isGameModeInitialized() { return isGameModeInitialized; }
   };
 }
 

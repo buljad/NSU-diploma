@@ -1,667 +1,951 @@
 <!-- packages/client/src/lib/components/BallCatcherCanvas.svelte -->
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { stabilogramStore } from '../stores/stabilogram';
-  import { gameState } from '../stores/gameState';
-  import { BallCatcherGame } from '../game/BallCatcherGame';
-  import type { Ball, FloatingText } from '../game/types';
-  import {
-    BALL_STATE_INACTIVE,
-    BALL_STATE_FALLING,
-    BALL_STATE_DWELLING,
-    BALL_STATE_CAUGHT,
-    BALL_STATE_MISSED,
-    BALL_NORMAL,
-    STAGE_RESULTS,
-  } from '../game/types';
-  import {
-    GAME_BG_COLOR,
-    BALL_FILL_COLORS,
-    BALL_STROKE_COLORS,
-    BALL_GLOW_COLORS,
-    BALL_SYMBOLS,
-    BASKET_FILL_COLOR,
-    BASKET_STROKE_COLOR,
-    BASKET_WOBBLE_FILL_COLOR,
-    BASKET_WOBBLE_STROKE_COLOR,
-    BASKET_CORNER_RADIUS,
-    BASKET_STROKE_WIDTH,
-    DWELL_RING_FILL,
-    DWELL_RING_BG,
-    DWELL_RING_WIDTH,
-    DWELL_RING_GAP,
-    COMFORT_ZONE_COLOR,
-    COMFORT_ZONE_ACTIVE_COLOR,
-    COMFORT_ZONE_VISUAL_RADIUS,
-    SCORE_TEXT_COLORS,
-    SCORE_FLOAT_FONT,
-    BALL_SYMBOL_FONT,
-    HUD_FONT,
-    TARGET_HINT_FONT,
-    COLOR_CHANGE_FLASH_MS,
-    RESULTS_TITLE_FONT,
-    RESULTS_BODY_FONT,
-  } from '../game/constants';
-
-  // ══════════════════════════════════════════════
-  // Props
-  // ══════════════════════════════════════════════
-
-  export let width = 800;
-  export let height = 600;
-
-  // ══════════════════════════════════════════════
-  // Exported methods (parent calls via bind:this)
-  // ══════════════════════════════════════════════
-
-  export function startGame(difficulty: number): void {
-    if (!game) return;
-    game.start(difficulty);
-    snapshotCounter = SNAPSHOT_INTERVAL;
-  }
-
-  export function pauseGame(): void {
-    if (!game) return;
-    game.pause();
-    gameState.updateSnapshot(game.getSnapshot());
-  }
-
-  export function resumeGame(): void {
-    if (!game) return;
-    game.resume();
-    gameState.updateSnapshot(game.getSnapshot());
-  }
-
-  export function stopGame(): void {
-    if (!game) return;
-    game.stop();
-    gameState.updateSnapshot(game.getSnapshot());
-  }
-
-  export function restartGame(): void {
-    if (!game) return;
-    game.restart();
-    snapshotCounter = SNAPSHOT_INTERVAL;
-  }
-
-  // ══════════════════════════════════════════════
-  // Local state
-  // ══════════════════════════════════════════════
-
-  let canvas: HTMLCanvasElement;
-  let ctx: CanvasRenderingContext2D;
-  let game: BallCatcherGame;
-  let animationId: number;
-
-  // FPS tracking
-  let frameCount = 0;
-  let fps = 0;
-  let fpsUpdateTime = 0;
-
-  // Snapshot throttle (~6 Гц)
-  const SNAPSHOT_INTERVAL = 10;
-  let snapshotCounter = 0;
-
-  // Pre-computed constants (avoid Math.PI in hot loop)
-  const TWO_PI = 6.283185307179586;
-  const HALF_PI = 1.5707963267948966;
-
-  // ══════════════════════════════════════════════
-  // Reactive: auto-pause on disconnect
-  // ══════════════════════════════════════════════
-
-  $: isDeviceOk = $stabilogramStore.isDeviceConnected && $stabilogramStore.isWsConnected;
-
-  $: if (game && game.isRunning && !game.isPaused && !isDeviceOk) {
-    game.pause();
-    gameState.updateSnapshot(game.getSnapshot());
-  }
-
-  $: if (game && game.isRunning && game.isPaused && isDeviceOk) {
-    game.resume();
-    gameState.updateSnapshot(game.getSnapshot());
-  }
-
-  // ══════════════════════════════════════════════
-  // Lifecycle
-  // ══════════════════════════════════════════════
-
-  onMount(() => {
-    ctx = canvas.getContext('2d')!;
-    game = new BallCatcherGame(width, height);
-    stabilogramStore.initialize({ x: width, y: height });
-    fpsUpdateTime = performance.now();
-    animate();
-  });
-
-  onDestroy(() => {
-    if (animationId) cancelAnimationFrame(animationId);
-  });
-
-  // ══════════════════════════════════════════════
-  // Render loop (ZERO-GC)
-  // ══════════════════════════════════════════════
-
-  function animate(): void {
-    const now = performance.now();
-
-    // FPS
-    frameCount++;
-    if (now - fpsUpdateTime >= 1000) {
-      fps = frameCount;
-      frameCount = 0;
-      fpsUpdateTime = now;
-    }
-
-    // Update game (zero-GC: all scalar params)
-    if (game && game.isRunning && !game.isPaused) {
-      const pos = stabilogramStore.getRenderPosition();
-      const vel = stabilogramStore.getRenderVelocity();
-      game.update(pos.x, pos.y, vel.x, vel.y, now);
-    }
-
-    // Draw (zero-GC)
-    draw(now);
-
-    // Snapshot → Svelte Store (throttled, ~6 Гц)
-    if (game) {
-      snapshotCounter++;
-      if (snapshotCounter >= SNAPSHOT_INTERVAL) {
-        snapshotCounter = 0;
-        gameState.updateSnapshot(game.getSnapshot());
-      }
-    }
-
-    animationId = requestAnimationFrame(animate);
-  }
-
-  // ══════════════════════════════════════════════
-  // Draw orchestrator
-  // ══════════════════════════════════════════════
-
-  function draw(now: number): void {
-    // Background
-    ctx.fillStyle = GAME_BG_COLOR;
-    ctx.fillRect(0, 0, width, height);
-
-    if (!game || !game.isRunning) {
-      drawWaitingScreen();
-      return;
-    }
-
-    if (game.stageManager.currentStage === STAGE_RESULTS) {
-      drawResultsScreen();
-      return;
-    }
-
-    // Active game
-    drawComfortZone();
-    drawBalls();
-    drawBasket();
-    drawFloatingTexts();
-    drawHUD(now);
-    drawColorChangeFlash(now);
-
-    if (game.isPaused) {
-      drawPauseOverlay();
-    }
-  }
-
-  // ══════════════════════════════════════════════
-  // Draw: Comfort Zone
-  // ══════════════════════════════════════════════
-
-  function drawComfortZone(): void {
-    const cx = width * 0.5;
-    const cy = height * 0.5;
-    const isActive = game.scoreManager.isInComfortZone;
-
-    ctx.setLineDash([6, 6]);
-    ctx.strokeStyle = isActive ? COMFORT_ZONE_ACTIVE_COLOR : COMFORT_ZONE_COLOR;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, COMFORT_ZONE_VISUAL_RADIUS, 0, TWO_PI);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Fill if active
-    if (isActive) {
-      ctx.fillStyle = COMFORT_ZONE_COLOR;
-      ctx.beginPath();
-      ctx.arc(cx, cy, COMFORT_ZONE_VISUAL_RADIUS, 0, TWO_PI);
-      ctx.fill();
-    }
-  }
-
-  // ══════════════════════════════════════════════
-  // Draw: Balls
-  // ══════════════════════════════════════════════
-
-  function drawBalls(): void {
-    const balls = game.ballPool.balls;
-    const cap = game.ballPool.capacity;
-
-    for (let i = 0; i < cap; i++) {
-      const b = balls[i];
-      if (b.state === BALL_STATE_INACTIVE) continue;
-      drawSingleBall(b);
-    }
-  }
-
-  function drawSingleBall(b: Ball): void {
-    let drawR = b.radius;
-    let drawAlpha = b.opacity;
-
-    // ── Animations ──
-    if (b.state === BALL_STATE_CAUGHT) {
-      drawR = b.radius * (1 + b.animProgress * 0.5);
-      drawAlpha = (1 - b.animProgress) * b.opacity;
-    } else if (b.state === BALL_STATE_MISSED) {
-      drawR = b.radius * (1 - b.animProgress * 0.5);
-      drawAlpha = (1 - b.animProgress) * b.opacity;
-    }
-
-    if (drawAlpha <= 0.01 || drawR < 1) return;
-
-    ctx.globalAlpha = drawAlpha;
-
-    // ── Glow ──
-    ctx.fillStyle = BALL_GLOW_COLORS[b.colorIndex];
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, drawR + 8, 0, TWO_PI);
-    ctx.fill();
-
-    // ── Main circle ──
-    if (b.state === BALL_STATE_MISSED) {
-      ctx.fillStyle = '#e74c3c';
-    } else {
-      ctx.fillStyle = BALL_FILL_COLORS[b.colorIndex];
-    }
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, drawR, 0, TWO_PI);
-    ctx.fill();
-
-    // ── Stroke ──
-    if (b.ballType !== BALL_NORMAL) {
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-    } else {
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = BALL_STROKE_COLORS[b.colorIndex];
-    }
-    ctx.stroke();
-
-    // ── Highlight (3D effect) ──
-    ctx.fillStyle = 'rgba(255,255,255,0.35)';
-    ctx.beginPath();
-    ctx.arc(b.x - drawR * 0.25, b.y - drawR * 0.25, drawR * 0.3, 0, TWO_PI);
-    ctx.fill();
-
-    // ── Symbol (Final stage) ──
-    if (b.symbolIndex >= 0 && b.symbolIndex < BALL_SYMBOLS.length) {
-      ctx.fillStyle = 'rgba(0,0,0,0.7)';
-      ctx.font = BALL_SYMBOL_FONT;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(BALL_SYMBOLS[b.symbolIndex], b.x, b.y + 1);
-    }
-
-    // ── Target indicator (subtle ring for target balls) ──
-    if (b.isTarget && b.state !== BALL_STATE_CAUGHT && b.state !== BALL_STATE_MISSED) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 3]);
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, drawR + 3, 0, TWO_PI);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    // ── Dwell ring ──
-    if (b.state === BALL_STATE_DWELLING && b.dwellProgress > 0) {
-      drawDwellRing(b.x, b.y, drawR, b.dwellProgress);
-    }
-
-    ctx.globalAlpha = 1;
-  }
-
-  // ══════════════════════════════════════════════
-  // Draw: Dwell Ring (progress of catch)
-  // ══════════════════════════════════════════════
-
-  function drawDwellRing(x: number, y: number, r: number, progress: number): void {
-    const ringR = r + DWELL_RING_GAP + DWELL_RING_WIDTH * 0.5;
-
-    // Background ring
-    ctx.strokeStyle = DWELL_RING_BG;
-    ctx.lineWidth = DWELL_RING_WIDTH;
-    ctx.beginPath();
-    ctx.arc(x, y, ringR, 0, TWO_PI);
-    ctx.stroke();
-
-    // Progress arc (starts from top, clockwise)
-    ctx.strokeStyle = DWELL_RING_FILL;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.arc(x, y, ringR, -HALF_PI, -HALF_PI + progress * TWO_PI);
-    ctx.stroke();
-    ctx.lineCap = 'butt';
-  }
-
-  // ══════════════════════════════════════════════
-  // Draw: Basket
-  // ══════════════════════════════════════════════
-
-  function drawBasket(): void {
-    const bc = game.basketController;
-    const bk = bc.basket;
-    const bx = bc.getDrawX();
-    const by = bc.getDrawY();
-    const bw = bk.width;
-    const bh = bk.height;
-    const isWobbling = bc.isWobbling();
-
-    // Shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    roundedRect(bx - bw * 0.5 + 3, by - bh * 0.5 + 4, bw, bh, BASKET_CORNER_RADIUS);
-    ctx.fill();
-
-    // Body
-    ctx.fillStyle = isWobbling ? BASKET_WOBBLE_FILL_COLOR : BASKET_FILL_COLOR;
-    ctx.strokeStyle = isWobbling ? BASKET_WOBBLE_STROKE_COLOR : BASKET_STROKE_COLOR;
-    ctx.lineWidth = BASKET_STROKE_WIDTH;
-
-    roundedRect(bx - bw * 0.5, by - bh * 0.5, bw, bh, BASKET_CORNER_RADIUS);
-    ctx.fill();
-    ctx.stroke();
-
-    // Inner lines (basket texture)
-    ctx.strokeStyle = isWobbling ? 'rgba(231,76,60,0.3)' : 'rgba(74,158,255,0.25)';
-    ctx.lineWidth = 1;
-    const innerX = bx - bw * 0.5 + 8;
-    const innerW = bw - 16;
-    const lineY1 = by - bh * 0.15;
-    const lineY2 = by + bh * 0.15;
-
-    ctx.beginPath();
-    ctx.moveTo(innerX, lineY1);
-    ctx.lineTo(innerX + innerW, lineY1);
-    ctx.moveTo(innerX, lineY2);
-    ctx.lineTo(innerX + innerW, lineY2);
-    ctx.stroke();
-
-    // Wobble indicator (intensity bar)
-    if (bk.wobbleIntensity > 0.01) {
-      const barW = bw * bk.wobbleIntensity;
-      ctx.fillStyle = 'rgba(231,76,60,0.6)';
-      ctx.fillRect(bx - barW * 0.5, by + bh * 0.5 + 4, barW, 3);
-    }
-  }
-
-  // ══════════════════════════════════════════════
-  // Draw: Floating Texts (score popups)
-  // ══════════════════════════════════════════════
-
-  function drawFloatingTexts(): void {
-    const texts = game.scoreManager.texts;
-    const cap = game.scoreManager.textCapacity;
-    const sm = game.scoreManager;
-
-    ctx.font = SCORE_FLOAT_FONT;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-
-    for (let i = 0; i < cap; i++) {
-      const t = texts[i];
-      if (!t.active) continue;
-
-      const alpha = sm.getTextOpacity(t);
-      if (alpha <= 0.01) continue;
-
-      const scale = sm.getTextScale(t);
-
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = SCORE_TEXT_COLORS[t.colorIndex] ?? 'white';
-
-      ctx.save();
-      ctx.translate(t.x, t.y);
-      ctx.scale(scale, scale);
-      ctx.fillText(t.text, 0, 0);
-      ctx.restore();
-    }
-
-    ctx.globalAlpha = 1;
-  }
-
-  // ══════════════════════════════════════════════
-  // Draw: HUD (score, target hint, timer)
-  // ══════════════════════════════════════════════
-
-  function drawHUD(now: number): void {
-    const sm = game.stageManager;
-    const sc = game.scoreManager;
-
-    // ── Score (top-left) ──
-    ctx.font = HUD_FONT;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    ctx.fillStyle = 'white';
-    ctx.fillText('Очки: ' + sc.score, 15, 15);
-
-    // ── Streak (below score) ──
-    if (sc.streak > 1) {
-      ctx.fillStyle = '#f1c40f';
-      ctx.fillText('Серия: ×' + sc.streak, 15, 42);
-    }
-
-    // ── Target hint (top-center) ──
-    ctx.textAlign = 'center';
-    ctx.font = TARGET_HINT_FONT;
-    ctx.fillStyle = BALL_FILL_COLORS[sm.targetColorIndex];
-    ctx.fillText('Лови ' + sm.getTargetColorName() + '!', width * 0.5, 18);
-
-    // ── Stage indicator (top-right) ──
-    ctx.textAlign = 'right';
-    ctx.font = HUD_FONT;
-    ctx.fillStyle = 'rgba(255,255,255,0.7)';
-    ctx.fillText('Этап ' + sm.currentStage, width - 15, 15);
-
-    // ── Timer (below stage, if time-limited) ──
-    const remaining = sm.getTimeRemainingSec();
-    if (remaining >= 0) {
-      const secs = Math.ceil(remaining);
-      ctx.fillStyle = remaining < 10 ? '#e74c3c' : 'rgba(255,255,255,0.7)';
-      ctx.fillText(secs + ' с', width - 15, 42);
-    }
-
-    // ── Comfort zone timer (bottom-center) ──
-    if (sc.isInComfortZone && sc.comfortZoneTime > 0.5) {
-      ctx.textAlign = 'center';
-      ctx.fillStyle = COMFORT_ZONE_ACTIVE_COLOR;
-      ctx.font = HUD_FONT;
-      ctx.fillText(
-        'Баланс: ' + sc.comfortZoneTime.toFixed(1) + ' с',
-        width * 0.5,
-        height - 20,
-      );
-    }
-
-    // ── FPS (bottom-left, small) ──
-    ctx.textAlign = 'left';
-    ctx.font = '12px monospace';
-    ctx.fillStyle = 'rgba(255,255,255,0.3)';
-    ctx.fillText('FPS: ' + fps, 10, height - 10);
-  }
-
-  // ══════════════════════════════════════════════
-  // Draw: Color Change Flash (Stage 2+)
-  // ══════════════════════════════════════════════
-
-  function drawColorChangeFlash(now: number): void {
-    const elapsed = now - game.stageManager.lastColorChangeTime;
-    if (elapsed >= COLOR_CHANGE_FLASH_MS || elapsed < 0) return;
-
-    const progress = elapsed / COLOR_CHANGE_FLASH_MS;
-    const alpha = (1 - progress) * 0.15;
-
-    ctx.fillStyle = BALL_FILL_COLORS[game.stageManager.targetColorIndex];
-    ctx.globalAlpha = alpha;
-    ctx.fillRect(0, 0, width, height);
-    ctx.globalAlpha = 1;
-  }
-
-  // ══════════════════════════════════════════════
-  // Draw: Pause Overlay
-  // ══════════════════════════════════════════════
-
-  function drawPauseOverlay(): void {
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(0, 0, width, height);
-
-    ctx.font = RESULTS_TITLE_FONT;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'white';
-    ctx.fillText('ПАУЗА', width * 0.5, height * 0.45);
-
-    ctx.font = RESULTS_BODY_FONT;
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
-    ctx.fillText('Ожидание подключения...', width * 0.5, height * 0.55);
-  }
-
-  // ══════════════════════════════════════════════
-  // Draw: Waiting Screen (before game starts)
-  // ══════════════════════════════════════════════
-
-  function drawWaitingScreen(): void {
-    ctx.font = TARGET_HINT_FONT;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.fillText('Поймай мяч! 🎾', width * 0.5, height * 0.4);
-
-    ctx.font = RESULTS_BODY_FONT;
-    ctx.fillStyle = 'rgba(255,255,255,0.3)';
-    ctx.fillText('Выберите сложность и нажмите «Старт»', width * 0.5, height * 0.52);
-  }
-
-  // ══════════════════════════════════════════════
-  // Draw: Results Screen
-  // ══════════════════════════════════════════════
-
-  function drawResultsScreen(): void {
-    const sc = game.scoreManager;
-
-    // Dark overlay
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.fillRect(0, 0, width, height);
-
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-
-    // Title
-    ctx.font = RESULTS_TITLE_FONT;
-    ctx.fillStyle = '#f1c40f';
-    ctx.fillText('Игра завершена!', width * 0.5, height * 0.22);
-
-    // Score
-    ctx.font = 'bold 48px sans-serif';
-    ctx.fillStyle = 'white';
-    ctx.fillText('' + sc.score, width * 0.5, height * 0.36);
-
-    ctx.font = RESULTS_BODY_FONT;
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
-    ctx.fillText('очков', width * 0.5, height * 0.43);
-
-    // Stats
-    ctx.font = RESULTS_BODY_FONT;
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    const col1x = width * 0.35;
-    const col2x = width * 0.65;
-    let rowY = height * 0.55;
-    const rowH = 30;
-
-    ctx.textAlign = 'left';
-    ctx.fillText('Поймано:', col1x, rowY);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#2ecc71';
-    ctx.fillText('' + sc.catchCount, col2x, rowY);
-
-    rowY += rowH;
-    ctx.textAlign = 'left';
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    ctx.fillText('Пропущено:', col1x, rowY);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#e74c3c';
-    ctx.fillText('' + sc.missCount, col2x, rowY);
-
-    rowY += rowH;
-    ctx.textAlign = 'left';
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    ctx.fillText('Ошибок:', col1x, rowY);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#e67e22';
-    ctx.fillText('' + sc.wrongCatchCount, col2x, rowY);
-
-    rowY += rowH;
-    ctx.textAlign = 'left';
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    ctx.fillText('Лучшая серия:', col1x, rowY);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#f1c40f';
-    ctx.fillText('×' + sc.bestStreak, col2x, rowY);
-
-    rowY += rowH;
-    ctx.textAlign = 'left';
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    ctx.fillText('Время:', col1x, rowY);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = 'white';
-    ctx.fillText((game.totalElapsedMs * 0.001).toFixed(1) + ' с', col2x, rowY);
-
-    // Hint
-    ctx.textAlign = 'center';
-    ctx.font = RESULTS_BODY_FONT;
-    ctx.fillStyle = 'rgba(255,255,255,0.4)';
-    ctx.fillText('Нажмите «Заново» для повторной игры', width * 0.5, height * 0.88);
-  }
-
-  // ══════════════════════════════════════════════
-  // Helper: Rounded Rectangle (zero-GC path ops)
-  // ══════════════════════════════════════════════
-
-  function roundedRect(x: number, y: number, w: number, h: number, r: number): void {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.arcTo(x + w, y, x + w, y + r, r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
-    ctx.lineTo(x + r, y + h);
-    ctx.arcTo(x, y + h, x, y + h - r, r);
-    ctx.lineTo(x, y + r);
-    ctx.arcTo(x, y, x + r, y, r);
-    ctx.closePath();
-  }
+	import { onMount, onDestroy } from 'svelte';
+	import { stabilogramStore } from '../stores/stabilogram';
+	import { gameStateStore, currentStage, isGameActive } from '../stores/gameState';
+	import { BallCatcherGame } from '../game/BallCatcherGame';
+	import type { Vector2D } from '@stabilometer/shared';
+	import {
+		STAGE_MENU,
+		STAGE_RESULTS,
+		STAGE_PAUSED,
+		DIFF_EASY,
+		DIFF_MEDIUM,
+		DIFF_HARD
+	} from '../game/types';
+	import {
+		GAME_BG_COLOR,
+		BALL_FILL_COLORS,
+		BALL_STROKE_COLORS,
+		BALL_GLOW_COLORS,
+		BALL_SYMBOLS,
+		BASKET_FILL_COLOR,
+		BASKET_STROKE_COLOR,
+		BASKET_WOBBLE_FILL_COLOR,
+		BASKET_WOBBLE_STROKE_COLOR,
+		BASKET_CORNER_RADIUS,
+		BASKET_STROKE_WIDTH,
+		DWELL_RING_FILL,
+		DWELL_RING_BG,
+		DWELL_RING_WIDTH,
+		DWELL_RING_GAP,
+		HUD_FONT,
+		TARGET_HINT_FONT,
+		SCORE_FLOAT_FONT,
+		BALL_SYMBOL_FONT,
+		SCORE_TEXT_COLORS,
+		COMFORT_ZONE_VISUAL_RADIUS,
+		COMFORT_ZONE_COLOR,
+		COMFORT_ZONE_ACTIVE_COLOR,
+		COLOR_CHANGE_FLASH_MS,
+		COLOR_CHANGE_FLASH_COLOR,
+		WOBBLE_CATCH_BLOCK_THRESHOLD,
+		DIFFICULTY_PRESETS
+	} from '../game/constants';
+	import {
+		BALL_STATE_INACTIVE,
+		BALL_STATE_FALLING,
+		BALL_STATE_DWELLING,
+		BALL_STATE_CAUGHT,
+		BALL_STATE_MISSED
+	} from '../game/types';
+
+	// ════════════════════════════════════════════════
+	// Props
+	// ════════════════════════════════════════════════
+
+	export let width = 1000;
+	export let height = 750;
+	export let showDebug = false;
+	export let hideGameControls = false;
+
+	// ════════════════════════════════════════════════
+	// Canvas & Game
+	// ════════════════════════════════════════════════
+
+	let canvas: HTMLCanvasElement;
+	let ctx: CanvasRenderingContext2D;
+	let game: BallCatcherGame;
+	let animationId: number;
+	let isInitialized = false;
+
+	// ════════════════════════════════════════════════
+	// Render state (предаллокация для zero-GC)
+	// ════════════════════════════════════════════════
+
+	const tempPos: Vector2D = { x: 0, y: 0 };
+	const tempVel: Vector2D = { x: 0, y: 0 };
+
+	// ════════════════════════════════════════════════
+	// UI state
+	// ════════════════════════════════════════════════
+
+	let selectedDifficulty = DIFF_MEDIUM;
+	let lastSnapshotUpdate = 0;
+
+	// ════════════════════════════════════════════════
+	// Event handlers (типизированные)
+	// ════════════════════════════════════════════════
+
+	function handleGameStart(event: Event): void {
+		const customEvent = event as CustomEvent<{ difficulty: number }>;
+		selectedDifficulty = customEvent.detail.difficulty;
+		startGame();
+	}
+
+	function handleGamePause(event: Event): void {
+		console.log('🎮 Received pause event, current game state:', {
+			'game?.isRunning': game?.isRunning,
+			'game?.isPaused': game?.isPaused
+		});
+		pauseGame();
+	}
+
+	function handleGameRestart(event: Event): void {
+		console.log('🎮 Received restart event');
+		restartGame();
+	}
+
+	function handleGameStop(event: Event): void {
+		console.log('🎮 Received stop event');
+		stopGame();
+	}
+
+	// Reactive subscriptions
+	$: stabilogramState = $stabilogramStore;
+	$: stage = $currentStage;
+	$: gameActive = $isGameActive;
+
+	// ✅ Отладочная реактивность
+	$: if (showDebug) {
+		console.log('🎮 Game State:', {
+			stage,
+			gameActive,
+			'game?.isRunning': game?.isRunning,
+			'game?.isPaused': game?.isPaused,
+			stabilogramConnected: stabilogramState.isWsConnected && stabilogramState.isDeviceConnected,
+			isInitialized
+		});
+	}
+
+	// ════════════════════════════════════════════════
+	// Lifecycle
+	// ════════════════════════════════════════════════
+
+	onMount(() => {
+		initializeGame();
+
+		// ✅ ИСПРАВЛЕНИЕ: Правильная типизация event listeners
+		window.addEventListener('gameStart', handleGameStart as EventListener);
+		window.addEventListener('gamePause', handleGamePause as EventListener);
+		window.addEventListener('gameRestart', handleGameRestart as EventListener);
+		window.addEventListener('gameStop', handleGameStop as EventListener);
+	});
+
+	onDestroy(() => {
+		cleanup();
+
+		// ✅ ИСПРАВЛЕНИЕ: Удаляем слушатели с правильной типизацией
+		window.removeEventListener('gameStart', handleGameStart as EventListener);
+		window.removeEventListener('gamePause', handleGamePause as EventListener);
+		window.removeEventListener('gameRestart', handleGameRestart as EventListener);
+		window.removeEventListener('gameStop', handleGameStop as EventListener);
+	});
+
+	// ✅ Отдельная функция инициализации
+	function initializeGame(): void {
+		if (isInitialized) return;
+
+		ctx = canvas.getContext('2d')!;
+		game = new BallCatcherGame(width, height);
+
+		// 🔧 ВАЖНО: Инициализируем store только если не был инициализирован для игрового режима
+		if (!stabilogramStore.isGameModeInitialized) {
+			stabilogramStore.initializeGameMode({ x: width, y: height });
+		}
+
+		// 🔧 Принудительно устанавливаем состояние MENU
+		gameStateStore.reset();
+		gameStateStore.updateSnapshot({
+			...game.getSnapshot(),
+			stage: STAGE_MENU,
+			isRunning: false,
+			isPaused: false
+		});
+
+		isInitialized = true;
+		startRenderLoop();
+
+		console.log('🎮 Game initialized:', { width, height, stage: STAGE_MENU });
+	}
+
+	function cleanup(): void {
+		if (animationId) {
+			cancelAnimationFrame(animationId);
+		}
+		if (game) {
+			game.stop();
+		}
+		// 🔧 Сбрасываем флаг инициализации игрового режима
+		if (stabilogramStore.resetGameMode) {
+			stabilogramStore.resetGameMode();
+		}
+		isInitialized = false;
+	}
+
+	// ════════════════════════════════════════════════
+	// Render Loop (ZERO-GC)
+	// ════════════════════════════════════════════════
+
+	function startRenderLoop(): void {
+		function render(now: number): void {
+			if (!isInitialized) return;
+
+			updateGame(now);
+			drawFrame(now);
+			updateGameStateStore(now);
+			animationId = requestAnimationFrame(render);
+		}
+		animationId = requestAnimationFrame(render);
+	}
+
+	/**
+	 * Обновить игровую логику (ZERO-GC: только чтение/мутация полей).
+	 */
+	function updateGame(now: number): void {
+		if (!game) return;
+
+		// ✅ Проверяем подключение только для запущенной игры
+		if (
+			game.isRunning &&
+			(!stabilogramState.isWsConnected || !stabilogramState.isDeviceConnected)
+		) {
+			if (!game.isPaused) {
+				game.pause();
+				console.log('⏸️ Game paused: connection lost');
+			}
+			return;
+		}
+
+		// Resume если была пауза и теперь все подключено
+		if (
+			game.isPaused &&
+			game.isRunning &&
+			stabilogramState.isWsConnected &&
+			stabilogramState.isDeviceConnected
+		) {
+			game.resume();
+			console.log('▶️ Game resumed: connection restored');
+		}
+
+		// ✅ Получаем позицию только если игра запущена
+		if (game.isRunning && !game.isPaused) {
+			const renderPos = stabilogramStore.getRenderPosition();
+			const renderVel = stabilogramStore.getRenderVelocity();
+
+			tempPos.x = renderPos.x;
+			tempPos.y = renderPos.y;
+			tempVel.x = renderVel.x;
+			tempVel.y = renderVel.y;
+
+			game.update(tempPos.x, tempPos.y, tempVel.x, tempVel.y, now);
+		}
+	}
+
+	/**
+	 * Отрисовка кадра (ZERO-GC: только чтение массивов, мутация Canvas state).
+	 */
+	function drawFrame(now: number): void {
+		if (!ctx || !game) return;
+
+		// Очистка
+		ctx.fillStyle = GAME_BG_COLOR;
+		ctx.fillRect(0, 0, width, height);
+
+		// ✅ Всегда рисуем что-то, никогда не оставляем черный экран
+		if (stage === STAGE_MENU || !game.isRunning) {
+			drawMenu();
+			return;
+		}
+
+		if (stage === STAGE_RESULTS) {
+			drawResults();
+			return;
+		}
+
+		// ✅ Показываем базовый UI даже если игра на паузе
+		if (game.isPaused) {
+			drawPausedState();
+			return;
+		}
+
+		// ═══ Основной игровой рендеринг ═══
+		drawComfortZone(now);
+		drawBalls(now);
+		drawBasket(now);
+		drawFloatingTexts(now);
+		drawHUD();
+		drawColorChangeFlash(now);
+
+		if (showDebug) {
+			drawDebugInfo();
+		}
+	}
+
+	// ✅ Состояние паузы
+	function drawPausedState(): void {
+		// Затемнение
+		ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+		ctx.fillRect(0, 0, width, height);
+
+		// Текст паузы
+		ctx.font = 'bold 48px sans-serif';
+		ctx.fillStyle = '#ffffff';
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
+		ctx.fillText('ПАУЗА', width * 0.5, height * 0.4);
+
+		ctx.font = '24px sans-serif';
+		ctx.fillStyle = '#cccccc';
+		ctx.fillText('Проверьте подключение стабилометра', width * 0.5, height * 0.55);
+
+		if (showDebug) {
+			ctx.font = '16px monospace';
+			ctx.fillStyle = '#888';
+			ctx.textAlign = 'left';
+			ctx.fillText(`WS: ${stabilogramState.isWsConnected}`, 20, height - 60);
+			ctx.fillText(`Device: ${stabilogramState.isDeviceConnected}`, 20, height - 40);
+		}
+	}
+
+	/**
+	 * Обновить Svelte store (НЕ в каждом кадре — ~2-4 Гц).
+	 */
+	function updateGameStateStore(now: number): void {
+		if (now - lastSnapshotUpdate < 250) return; // 4 Гц
+		lastSnapshotUpdate = now;
+
+		if (game) {
+			const snapshot = game.getSnapshot(); // ⚠️ АЛЛОКАЦИЯ (но редко)
+			gameStateStore.updateSnapshot(snapshot);
+		}
+	}
+
+	// ════════════════════════════════════════════════
+	// Drawing Functions (ZERO-GC)
+	// ════════════════════════════════════════════════
+
+	function drawBalls(now: number): void {
+		const pool = game.ballPool;
+		const balls = pool.balls;
+		const cap = pool.capacity;
+
+		for (let i = 0; i < cap; i++) {
+			const ball = balls[i];
+			if (ball.state === BALL_STATE_INACTIVE) continue;
+
+			drawSingleBall(ball, now);
+		}
+	}
+
+	function drawSingleBall(ball: any, now: number): void {
+		const { x, y, radius, colorIndex, symbolIndex, opacity, state, animProgress } = ball;
+
+		// ── Анимации трансформаций ──
+		let drawRadius = radius;
+		let alpha = opacity;
+
+		if (state === BALL_STATE_CAUGHT) {
+			const t = animProgress;
+			drawRadius = radius * (1 + t * 0.5);
+			alpha = opacity * (1 - t);
+		} else if (state === BALL_STATE_MISSED) {
+			const t = animProgress;
+			drawRadius = radius * (1 - t * 0.7);
+			alpha = opacity * (1 - t);
+		}
+
+		if (alpha <= 0.01) return;
+
+		ctx.save();
+		ctx.globalAlpha = alpha;
+
+		// ── Glow эффект ──
+		if (ball.isTarget && alpha > 0.7) {
+			const glowColor = BALL_GLOW_COLORS[colorIndex];
+			ctx.shadowColor = glowColor;
+			ctx.shadowBlur = 15;
+		}
+
+		// ── Основной шар ──
+		ctx.fillStyle = BALL_FILL_COLORS[colorIndex];
+		ctx.strokeStyle = BALL_STROKE_COLORS[colorIndex];
+		ctx.lineWidth = 2;
+
+		ctx.beginPath();
+		ctx.arc(x, y, drawRadius, 0, Math.PI * 2);
+		ctx.fill();
+		ctx.stroke();
+
+		ctx.shadowBlur = 0;
+
+		// ── Символ ──
+		if (symbolIndex >= 0) {
+			ctx.fillStyle = '#ffffff';
+			ctx.font = BALL_SYMBOL_FONT;
+			ctx.textAlign = 'center';
+			ctx.textBaseline = 'middle';
+			ctx.fillText(BALL_SYMBOLS[symbolIndex], x, y);
+		}
+
+		// ── Dwell прогресс ──
+		if (state === BALL_STATE_DWELLING && ball.dwellProgress > 0) {
+			drawDwellRing(x, y, drawRadius, ball.dwellProgress);
+		}
+
+		ctx.restore();
+	}
+
+	function drawDwellRing(x: number, y: number, ballRadius: number, progress: number): void {
+		const ringRadius = ballRadius + DWELL_RING_GAP;
+		const startAngle = -Math.PI / 2;
+		const progressAngle = startAngle + progress * Math.PI * 2;
+
+		ctx.lineWidth = DWELL_RING_WIDTH;
+		ctx.lineCap = 'round';
+
+		ctx.strokeStyle = DWELL_RING_BG;
+		ctx.beginPath();
+		ctx.arc(x, y, ringRadius, 0, Math.PI * 2);
+		ctx.stroke();
+
+		if (progress > 0) {
+			ctx.strokeStyle = DWELL_RING_FILL;
+			ctx.beginPath();
+			ctx.arc(x, y, ringRadius, startAngle, progressAngle);
+			ctx.stroke();
+		}
+	}
+
+	function drawBasket(now: number): void {
+		const basket = game.basketController.basket;
+		const { wobbleIntensity } = basket;
+		const isWobbling = wobbleIntensity >= WOBBLE_CATCH_BLOCK_THRESHOLD;
+
+		const drawX = game.basketController.getDrawX();
+		const drawY = game.basketController.getDrawY();
+
+		ctx.save();
+
+		if (isWobbling) {
+			ctx.fillStyle = BASKET_WOBBLE_FILL_COLOR;
+			ctx.strokeStyle = BASKET_WOBBLE_STROKE_COLOR;
+		} else {
+			ctx.fillStyle = BASKET_FILL_COLOR;
+			ctx.strokeStyle = BASKET_STROKE_COLOR;
+		}
+
+		ctx.lineWidth = BASKET_STROKE_WIDTH;
+
+		const halfW = basket.width * 0.5;
+		const halfH = basket.height * 0.5;
+		const left = drawX - halfW;
+		const top = drawY - halfH;
+
+		ctx.beginPath();
+		ctx.roundRect(left, top, basket.width, basket.height, BASKET_CORNER_RADIUS);
+		ctx.fill();
+		ctx.stroke();
+
+		ctx.restore();
+	}
+
+	function drawComfortZone(now: number): void {
+		const centerX = width * 0.5;
+		const centerY = height * 0.5;
+
+		const scoreManager = game.scoreManager;
+		const isActive = scoreManager.isInComfortZone;
+		const progress = Math.min(scoreManager.comfortZoneTime / 10, 1);
+
+		const color = isActive && progress > 0.5 ? COMFORT_ZONE_ACTIVE_COLOR : COMFORT_ZONE_COLOR;
+
+		ctx.save();
+		ctx.strokeStyle = color;
+		ctx.lineWidth = 2;
+		ctx.setLineDash([8, 6]);
+
+		ctx.beginPath();
+		ctx.arc(centerX, centerY, COMFORT_ZONE_VISUAL_RADIUS, 0, Math.PI * 2);
+		ctx.stroke();
+
+		ctx.restore();
+	}
+
+	function drawFloatingTexts(now: number): void {
+		const texts = game.scoreManager.texts;
+		const cap = game.scoreManager.textCapacity;
+
+		ctx.font = SCORE_FLOAT_FONT;
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
+
+		for (let i = 0; i < cap; i++) {
+			const text = texts[i];
+			if (!text.active) continue;
+
+			const opacity = game.scoreManager.getTextOpacity(text);
+			const scale = game.scoreManager.getTextScale(text);
+			const color = SCORE_TEXT_COLORS[text.colorIndex];
+
+			if (opacity <= 0.01) continue;
+
+			ctx.save();
+			ctx.globalAlpha = opacity;
+
+			if (scale !== 1) {
+				ctx.translate(text.x, text.y);
+				ctx.scale(scale, scale);
+				ctx.translate(-text.x, -text.y);
+			}
+
+			ctx.fillStyle = color;
+			ctx.fillText(text.text, text.x, text.y);
+
+			ctx.restore();
+		}
+	}
+
+	function drawHUD(): void {
+		const gameState = game.getSnapshot();
+
+		// ✅ ОСНОВНАЯ ИНФОРМАЦИЯ
+		ctx.font = HUD_FONT;
+		ctx.fillStyle = '#ffffff';
+		ctx.textAlign = 'left';
+
+		const hudLeft = 20;
+		let hudY = 30;
+		const lineHeight = 28;
+
+		ctx.fillText(`Счёт: ${gameState.score}`, hudLeft, hudY);
+		hudY += lineHeight;
+
+		if (gameState.streak > 0) {
+			ctx.fillText(`Серия: ${gameState.streak}`, hudLeft, hudY);
+			hudY += lineHeight;
+		}
+
+		ctx.fillText(`Поймано: ${gameState.catchCount}`, hudLeft, hudY);
+		hudY += lineHeight;
+
+		if (gameState.stageTimeRemaining > 0) {
+			ctx.fillText(`Время: ${gameState.stageTimeRemaining.toFixed(0)}с`, hudLeft, hudY);
+			hudY += lineHeight;
+		}
+
+		// ✅ ИНСТРУКЦИЯ ПО ИГРЕ
+		const hintY = height - 80;
+		ctx.font = TARGET_HINT_FONT;
+		ctx.fillStyle = '#FFE66D';
+		ctx.textAlign = 'center';
+
+		if (game.stageManager.config.useSymbols) {
+			ctx.fillText('Лови звёзды ★', width * 0.5, hintY);
+		} else {
+			ctx.fillText(`Лови ${gameState.targetColorName}!`, width * 0.5, hintY);
+		}
+
+		// ✅ ПОДСКАЗКА МЕХАНИКИ
+		ctx.font = '16px sans-serif';
+		ctx.fillStyle = '#88c999';
+		ctx.fillText('Наведи корзинку на шар и подержи 0.5-0.8 сек', width * 0.5, hintY + 30);
+
+		// ✅ СТАТУС ПАУЗЫ
+		if (game.isPaused) {
+			ctx.font = 'bold 32px sans-serif';
+			ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+			ctx.textAlign = 'center';
+			ctx.textBaseline = 'middle';
+
+			// Затемнение для паузы
+			ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+			ctx.fillRect(0, 0, width, height);
+
+			ctx.fillStyle = '#ffffff';
+			ctx.fillText('⏸️ ПАУЗА', width * 0.5, height * 0.5);
+		}
+	}
+
+	function drawColorChangeFlash(now: number): void {
+		const timeSinceChange = now - game.stageManager.lastColorChangeTime;
+		if (timeSinceChange > COLOR_CHANGE_FLASH_MS) return;
+
+		const progress = timeSinceChange / COLOR_CHANGE_FLASH_MS;
+		const alpha = (1 - progress) * 0.15;
+
+		ctx.save();
+		ctx.fillStyle = COLOR_CHANGE_FLASH_COLOR.replace('0.15', alpha.toString());
+		ctx.fillRect(0, 0, width, height);
+		ctx.restore();
+	}
+
+	// ✅ Улучшенное меню с диагностикой
+	function drawMenu(): void {
+		ctx.font = 'bold 48px sans-serif';
+		ctx.fillStyle = '#ffffff';
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
+		ctx.fillText('Поймай мяч!', width * 0.5, height * 0.3);
+
+		ctx.font = '24px sans-serif';
+		ctx.fillStyle = '#cccccc';
+		ctx.fillText('Выберите сложность и нажмите "Старт"', width * 0.5, height * 0.5);
+
+		// ✅ Статус подключения
+		const connectionColor =
+			stabilogramState.isWsConnected && stabilogramState.isDeviceConnected ? '#10b981' : '#ef4444';
+		const connectionText =
+			stabilogramState.isWsConnected && stabilogramState.isDeviceConnected
+				? 'Стабилометр готов'
+				: 'Подключите стабилометр';
+
+		ctx.font = '18px sans-serif';
+		ctx.fillStyle = connectionColor;
+		ctx.fillText(connectionText, width * 0.5, height * 0.65);
+
+		if (showDebug) {
+			ctx.font = '14px monospace';
+			ctx.fillStyle = '#888';
+			ctx.textAlign = 'left';
+			const debugLines = [
+				`Stage: ${stage}`,
+				`Game: ${game?.isRunning ? 'running' : 'stopped'}`,
+				`WS: ${stabilogramState.isWsConnected}`,
+				`Device: ${stabilogramState.isDeviceConnected}`,
+				`Initialized: ${isInitialized}`
+			];
+			debugLines.forEach((line, i) => {
+				ctx.fillText(line, 10, height - 100 + i * 16);
+			});
+		}
+	}
+
+	function drawResults(): void {
+		const gameState = game.getSnapshot();
+
+		ctx.font = 'bold 42px sans-serif';
+		ctx.fillStyle = '#FFE66D';
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
+		ctx.fillText('Игра завершена!', width * 0.5, height * 0.3);
+
+		ctx.font = '28px sans-serif';
+		ctx.fillStyle = '#ffffff';
+		const y = height * 0.45;
+		const lineHeight = 35;
+
+		ctx.fillText(`Итоговый счёт: ${gameState.score}`, width * 0.5, y);
+		ctx.fillText(`Лучшая серия: ${gameState.bestStreak}`, width * 0.5, y + lineHeight);
+		ctx.fillText(`Поймано шаров: ${gameState.catchCount}`, width * 0.5, y + lineHeight * 2);
+	}
+
+	function drawDebugInfo(): void {
+		const pool = game.ballPool;
+		const renderPos = stabilogramStore.getRenderPosition();
+
+		ctx.font = '14px monospace';
+		ctx.fillStyle = 'rgba(255,255,255,0.8)';
+		ctx.textAlign = 'left';
+		ctx.textBaseline = 'top';
+
+		const lines = [
+			`CoP: (${renderPos.x.toFixed(1)}, ${renderPos.y.toFixed(1)}) mm`,
+			`Шаров: ${pool.activeCount}/${pool.capacity}`,
+			`Wobble: ${game.basketController.basket.wobbleIntensity.toFixed(2)}`,
+			`Stage: ${game.stageManager.currentStage}`
+		];
+
+		lines.forEach((line, i) => {
+			ctx.fillText(line, 10, height - 80 + i * 18);
+		});
+	}
+
+	// ════════════════════════════════════════════════
+	// Game Controls
+	// ════════════════════════════════════════════════
+
+	function startGame(): void {
+		if (!stabilogramState.isWsConnected || !stabilogramState.isDeviceConnected) {
+			alert('Сначала подключите стабилометр!');
+			return;
+		}
+
+		console.log('🚀 Starting game with difficulty:', selectedDifficulty);
+		game.start(selectedDifficulty);
+		gameStateStore.updateSnapshot(game.getSnapshot());
+	}
+
+	// ✅ ИСПРАВЛЕНИЕ: Улучшенная функция паузы
+	function pauseGame(): void {
+		if (!game) {
+			console.warn('⚠️ Game not initialized, cannot pause');
+			return;
+		}
+
+		console.log('🎮 Pause function called, game state:', {
+			isRunning: game.isRunning,
+			isPaused: game.isPaused
+		});
+
+		if (game.isRunning && !game.isPaused) {
+			game.pause();
+			console.log('⏸️ Game paused');
+		} else if (game.isRunning && game.isPaused) {
+			game.resume();
+			console.log('▶️ Game resumed');
+		} else {
+			console.warn('⚠️ Game not in pausable state');
+		}
+
+		// Принудительно обновляем стор
+		gameStateStore.updateSnapshot(game.getSnapshot());
+	}
+
+	function restartGame(): void {
+		if (!game) return;
+
+		console.log('🔄 Restarting game');
+		game.restart();
+		gameStateStore.updateSnapshot(game.getSnapshot());
+	}
+
+	function stopGame(): void {
+		if (!game) return;
+
+		console.log('🛑 Stopping game');
+		game.stop();
+		gameStateStore.reset();
+	}
+
+	function handleCanvasResize(): void {
+		if (game) {
+			game.updateCanvasSize(width, height);
+		}
+	}
+
+	// React на изменения размеров
+	$: if (canvas && game) {
+		handleCanvasResize();
+	}
 </script>
 
-<div class="game-canvas-container">
-  <canvas
-    bind:this={canvas}
-    {width}
-    {height}
-  />
+<!-- ════════════════════════════════════════════════ -->
+<!-- TEMPLATE -->
+<!-- ════════════════════════════════════════════════ -->
+
+<div class="ball-catcher-container">
+	<canvas bind:this={canvas} {width} {height} class="game-canvas" />
+
+	<!-- ✅ Используем проп hideGameControls -->
+	{#if !hideGameControls}
+		<div class="game-controls">
+			{#if stage === STAGE_MENU}
+				<div class="menu-panel">
+					<h3>Настройки игры</h3>
+
+					<div class="difficulty-selector">
+						<label for="difficulty-select">Сложность:</label>
+						<select id="difficulty-select" bind:value={selectedDifficulty}>
+							<option value={DIFF_EASY}>{DIFFICULTY_PRESETS[DIFF_EASY].label}</option>
+							<option value={DIFF_MEDIUM}>{DIFFICULTY_PRESETS[DIFF_MEDIUM].label}</option>
+							<option value={DIFF_HARD}>{DIFFICULTY_PRESETS[DIFF_HARD].label}</option>
+						</select>
+					</div>
+
+					<button
+						class="control-btn primary"
+						on:click={startGame}
+						disabled={!stabilogramState.isDeviceConnected}
+					>
+						🚀 Начать игру
+					</button>
+
+					{#if !stabilogramState.isWsConnected}
+						<p class="warning">Подключите WebSocket сервер</p>
+					{:else if !stabilogramState.isDeviceConnected}
+						<p class="warning">Подключите стабилометр</p>
+					{/if}
+				</div>
+			{:else if gameActive}
+				<div class="game-panel">
+					<button class="control-btn" on:click={pauseGame}>
+						{game?.isPaused ? 'Продолжить' : 'Пауза'}
+					</button>
+					<button class="control-btn" on:click={restartGame}>Заново</button>
+					<button class="control-btn secondary" on:click={stopGame}>Выйти в меню</button>
+				</div>
+			{:else if stage === STAGE_RESULTS}
+				<div class="results-panel">
+					<button class="control-btn" on:click={restartGame}>Играть снова</button>
+					<button class="control-btn secondary" on:click={stopGame}>В меню</button>
+				</div>
+			{/if}
+
+			{#if gameActive}
+				<div class="debug-toggle">
+					<input type="checkbox" id="debug-checkbox" bind:checked={showDebug} />
+					<label for="debug-checkbox">Отладка</label>
+				</div>
+			{/if}
+		</div>
+	{/if}
 </div>
 
-<style>
-  .game-canvas-container {
-    position: relative;
-    display: inline-block;
-  }
+<!-- ════════════════════════════════════════════════ -->
+<!-- STYLES -->
+<!-- ════════════════════════════════════════════════ -->
 
-  canvas {
-    border-radius: 12px;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
-    display: block;
-  }
+<style>
+	.ball-catcher-container {
+		position: relative;
+		display: inline-block;
+	}
+
+	.game-canvas {
+		border-radius: 12px;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+		border: 2px solid #2c3e50;
+		background: #0a0a1a;
+	}
+
+	.game-controls {
+		position: absolute;
+		top: 15px;
+		right: 15px;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		max-width: 220px;
+	}
+
+	.menu-panel,
+	.game-panel,
+	.results-panel {
+		background: rgba(255, 255, 255, 0.95);
+		backdrop-filter: blur(10px);
+		border-radius: 8px;
+		padding: 20px;
+		box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+	}
+
+	.menu-panel h3 {
+		margin: 0 0 16px 0;
+		color: #2c3e50;
+		font-weight: 600;
+	}
+
+	.difficulty-selector {
+		margin-bottom: 16px;
+	}
+
+	.difficulty-selector label {
+		display: block;
+		margin-bottom: 6px;
+		font-weight: 500;
+		color: #34495e;
+	}
+
+	.difficulty-selector select {
+		width: 100%;
+		padding: 8px 12px;
+		border: 2px solid #bdc3c7;
+		border-radius: 6px;
+		font-size: 14px;
+		background: white;
+		color: #2c3e50;
+	}
+
+	.control-btn {
+		background: #3498db;
+		color: white;
+		border: none;
+		border-radius: 6px;
+		padding: 10px 16px;
+		font-size: 14px;
+		font-weight: 500;
+		cursor: pointer;
+		transition: all 0.2s ease;
+		width: 100%;
+	}
+
+	.control-btn:hover:not(:disabled) {
+		background: #2980b9;
+		transform: translateY(-1px);
+		box-shadow: 0 4px 12px rgba(52, 152, 219, 0.3);
+	}
+
+	.control-btn:disabled {
+		background: #95a5a6;
+		cursor: not-allowed;
+		transform: none;
+		box-shadow: none;
+	}
+
+	.control-btn.primary {
+		background: #27ae60;
+	}
+
+	.control-btn.primary:hover:not(:disabled) {
+		background: #229954;
+		box-shadow: 0 4px 12px rgba(39, 174, 96, 0.3);
+	}
+
+	.control-btn.secondary {
+		background: #e74c3c;
+	}
+
+	.control-btn.secondary:hover:not(:disabled) {
+		background: #c0392b;
+		box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
+	}
+
+	.warning {
+		margin: 12px 0 0 0;
+		padding: 8px 12px;
+		background: #fff3cd;
+		border: 1px solid #ffeaa7;
+		border-radius: 4px;
+		color: #856404;
+		font-size: 13px;
+		text-align: center;
+	}
+
+	.debug-toggle {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 13px;
+		color: rgba(255, 255, 255, 0.8);
+		cursor: pointer;
+		margin-top: 8px;
+	}
+
+	.debug-toggle input[type='checkbox'] {
+		margin: 0;
+	}
+
+	@media (max-width: 1200px) {
+		.game-controls {
+			position: static;
+			margin-top: 15px;
+			max-width: none;
+		}
+
+		.menu-panel,
+		.game-panel,
+		.results-panel {
+			background: rgba(255, 255, 255, 1);
+		}
+	}
 </style>

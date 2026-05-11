@@ -614,29 +614,36 @@ class StabilogramServer {
 
     console.log("📊 Сырые offset'ы:", rawOffsets);
 
-    const minOffset = Math.min(
-      rawOffsets.d1,
-      rawOffsets.d2,
-      rawOffsets.d3,
-      rawOffsets.d4,
-    );
-
+    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: УБРАНО +1000!
+    // Сохраняем RAW offset'ы без модификаций
     const offsets: SensorData = {
-      d1: rawOffsets.d1 - minOffset + 1000,
-      d2: rawOffsets.d2 - minOffset + 1000,
-      d3: rawOffsets.d3 - minOffset + 1000,
-      d4: rawOffsets.d4 - minOffset + 1000,
+      d1: rawOffsets.d1,
+      d2: rawOffsets.d2,
+      d3: rawOffsets.d3,
+      d4: rawOffsets.d4,
     };
 
-    console.log("✅ Нормализованные offset'ы:", offsets);
+    console.log("✅ Offset'ы сохранены (без нормализации):", offsets);
 
-    const analysis = this.analyzeOffsets(offsets);
-    console.log("📈 Анализ калибровки:", analysis);
+    // ✅ НОВАЯ ДИАГНОСТИКА: Проверяем разброс датчиков
+    const sensorRange =
+      Math.max(rawOffsets.d1, rawOffsets.d2, rawOffsets.d3, rawOffsets.d4) -
+      Math.min(rawOffsets.d1, rawOffsets.d2, rawOffsets.d3, rawOffsets.d4);
+    const sensorAvg =
+      (rawOffsets.d1 + rawOffsets.d2 + rawOffsets.d3 + rawOffsets.d4) / 4;
+    const balanceRatio = sensorRange / sensorAvg;
 
-    if (!analysis.isBalanced) {
-      console.warn("⚠️ ПРЕДУПРЕЖДЕНИЕ: Калибровка не сбалансирована!");
+    console.log("📈 Баланс датчиков:", {
+      range: sensorRange.toFixed(0),
+      average: sensorAvg.toFixed(0),
+      balanceRatio: balanceRatio.toFixed(2),
+      isAcceptable: balanceRatio < 2.0, // Если > 2.0 - датчики сильно несбалансированы
+    });
+
+    if (balanceRatio > 2.0) {
+      console.warn("⚠️ ПРЕДУПРЕЖДЕНИЕ: Датчики сильно несбалансированы!");
       console.warn(
-        "💡 Рекомендация: Повторите калибровку на полностью пустой платформе",
+        "💡 Рекомендация: Проверьте подключение датчиков и повторите калибровку",
       );
     }
 
@@ -662,7 +669,23 @@ class StabilogramServer {
         sampleCount: this.calibrationSamples.length,
         isValid: true,
       },
-      analysis: analysis,
+      analysis: {
+        min: Math.min(
+          rawOffsets.d1,
+          rawOffsets.d2,
+          rawOffsets.d3,
+          rawOffsets.d4,
+        ),
+        max: Math.max(
+          rawOffsets.d1,
+          rawOffsets.d2,
+          rawOffsets.d3,
+          rawOffsets.d4,
+        ),
+        range: sensorRange,
+        average: sensorAvg,
+        isBalanced: balanceRatio < 2.0,
+      },
       rawOffsets: rawOffsets,
     });
 

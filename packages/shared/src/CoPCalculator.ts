@@ -4,38 +4,28 @@ import type { SensorData, Coordinates, CalibrationData } from './types.js';
 import { SENSOR_DISTANCE, PLATFORM_SIZE } from './constants.js';
 
 /**
- * Калькулятор центра давления (Center of Pressure)
+ * Калькулятор центра давления (Center of Pressure) v2.4+ 
  * 
- * Схема расположения датчиков:
- * 
- *       Y+ (вперёд)
- *         ↑
- *    ┌────┴────┐
- *    │ D1   D2 │
- *    │    ●    │  ← Центр платформы (0, 0)
- *    │ D4   D3 │
- *    └────┬────┘
- *         ↓
- *       Y- (назад)
- *   
- *   X- ←───────→ X+
- * (лево)      (право)
+ * ✅ КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ:
+ * - Убрано динамическое масштабирование (уничтожало точность)
+ * - Правильная обработка отрицательных значений после вычитания offset'ов
+ * - Упрощенная и стабильная формула CoP
+ * - Защита от деления на ноль при малой силе
  */
 export class CoPCalculator {
-  /** Расстояние между датчиками (мм) */
   private sensorDistanceX: number;
   private sensorDistanceY: number;
-  
-  /** Смещения нуля для каждого датчика */
   private offsets: SensorData = { d1: 0, d2: 0, d3: 0, d4: 0 };
   private isCalibrated: boolean = false;
   
-  // ✅ ДИНАМИЧЕСКОЕ масштабирование на основе реальных данных
-  private dynamicScale = 1.0;
-  private readonly MIN_FORCE = 50; // в нормализованных единицах
-  private readonly MAX_COORD = 150; // максимальное отклонение CoP в мм
+  // ✅ ИСПРАВЛЕНО: Фиксированный масштаб вместо динамического
+  private readonly FORCE_SCALE = 0.001;  // Перевод единиц датчика в "условные единицы силы"
+  private readonly MIN_TOTAL_FORCE = 10; // Минимальная сила для валидного CoP (в scaled единицах)
+  private readonly MAX_COORD = 150;
+  
   private sampleCount = 0;
   private forceHistory: number[] = [];
+  private problemCounter = 0;
 
   constructor(options: {
     sensorDistanceX?: number;
@@ -43,7 +33,7 @@ export class CoPCalculator {
   } = {}) {
     this.sensorDistanceX = options.sensorDistanceX ?? SENSOR_DISTANCE.x;
     this.sensorDistanceY = options.sensorDistanceY ?? SENSOR_DISTANCE.y;
-    console.log('🎯 CoPCalculator создан (режим переполнения):', {
+    console.log('🎯 CoPCalculator v2.4+ created (stable math):', {
       sensorDistanceX: this.sensorDistanceX,
       sensorDistanceY: this.sensorDistanceY
     });
@@ -53,44 +43,16 @@ export class CoPCalculator {
     this.offsets = { ...offsets };
     this.isCalibrated = true;
     
-    // ✅ ДИНАМИЧЕСКОЕ определение масштаба на основе РЕАЛЬНЫХ офсетов
-    const avgMagnitude = (Math.abs(offsets.d1) + Math.abs(offsets.d2) + 
-                         Math.abs(offsets.d3) + Math.abs(offsets.d4)) / 4;
-    
-    // Подбираем масштаб так, чтобы типичные значения были в разумном диапазоне
-    if (avgMagnitude > 5000000) {
-      this.dynamicScale = 0.0000001; // Миллионы -> доли единиц
-    } else if (avgMagnitude > 1000000) {
-      this.dynamicScale = 0.000001; // Миллионы -> единицы
-    } else if (avgMagnitude > 100000) {
-      this.dynamicScale = 0.00001;  // Сотни тысяч -> единицы
-    } else if (avgMagnitude > 10000) {
-      this.dynamicScale = 0.0001;   // Десятки тысяч -> единицы  
-    } else if (avgMagnitude > 1000) {
-      this.dynamicScale = 0.001;    // Тысячи -> единицы
-    } else {
-      this.dynamicScale = 0.01;     // Сотни -> единицы
-    }
-    
-    // ✅ Дополнительная проверка на основе диапазона значений
-    const maxValue = Math.max(Math.abs(offsets.d1), Math.abs(offsets.d2), 
-                              Math.abs(offsets.d3), Math.abs(offsets.d4));
-    if (maxValue > 8000000) {
-      // Если значения близки к переполнению, используем очень мелкий масштаб
-      this.dynamicScale = Math.min(this.dynamicScale, 0.0000001);
-    }
-    
-    console.log('✅ Калибровка установлена:', {
+    // ✅ УБРАНО: Динамическое масштабирование и проверка на несбалансированность
+    console.log('✅ Калибровка установлена v2.4+:', {
       offsets: {
         d1: offsets.d1.toFixed(0),
         d2: offsets.d2.toFixed(0),
         d3: offsets.d3.toFixed(0),
         d4: offsets.d4.toFixed(0)
       },
-      avgMagnitude: avgMagnitude.toFixed(0),
-      maxValue: maxValue.toFixed(0),
-      dynamicScale: this.dynamicScale,
-      expectedForceRange: `${(this.MIN_FORCE / this.dynamicScale).toFixed(0)} - ${(10000 / this.dynamicScale).toFixed(0)}`
+      forceScale: this.FORCE_SCALE,
+      minTotalForce: this.MIN_TOTAL_FORCE
     });
   }
 
@@ -102,61 +64,45 @@ export class CoPCalculator {
     return this.isCalibrated;
   }
 
-  calculate(sensors: SensorData): Coordinates {
+ calculate(sensors: SensorData): Coordinates {
     if (!this.isCalibrated) {
       return { x: 0, y: 0, z: 0, f: 0 };
     }
 
-    // 1. Вычитаем offset'ы (нормализованные - нормализованные)
-    const d1_adj = sensors.d1 - this.offsets.d1;
-    const d2_adj = sensors.d2 - this.offsets.d2;
-    const d3_adj = sensors.d3 - this.offsets.d3;
-    const d4_adj = sensors.d4 - this.offsets.d4;
+    this.sampleCount++;
 
-    // 2. Применяем динамическое масштабирование
-    const d1 = d1_adj * this.dynamicScale;
-    const d2 = d2_adj * this.dynamicScale;
-    const d3 = d3_adj * this.dynamicScale;
-    const d4 = d4_adj * this.dynamicScale;
+    // ✅ ШАГ 1 & 2: Вычитаем оффсеты и СРАЗУ отсекаем отрицательный шум
+    // Любое значение меньше оффсета приравниваем к 0 (давления нет)
+    const d1 = Math.max(0, (sensors.d1 - this.offsets.d1) * this.FORCE_SCALE);
+    const d2 = Math.max(0, (sensors.d2 - this.offsets.d2) * this.FORCE_SCALE);
+    const d3 = Math.max(0, (sensors.d3 - this.offsets.d3) * this.FORCE_SCALE);
+    const d4 = Math.max(0, (sensors.d4 - this.offsets.d4) * this.FORCE_SCALE);
 
-    // 3. ✅ УЛУЧШЕННЫЙ расчет силы с учетом знаков
-    const totalForce = Math.abs(d1) + Math.abs(d2) + Math.abs(d3) + Math.abs(d4);
+    // ✅ ШАГ 3: Общая сила теперь — это сумма чистых положительных давлений
+    const totalForce = d1 + d2 + d3 + d4;
     
-    // Адаптивная минимальная сила на основе истории
-    this.updateForceStatistics(totalForce);
-    const adaptiveMinForce = this.getAdaptiveMinForce();
-    
-    if (totalForce < adaptiveMinForce) {
+    // ✅ ШАГ 4: Снижаем порог до минимума, так как мы уже убрали отрицательный шум
+    if (totalForce < 0.1) { 
       return { x: 0, y: 0, z: 0, f: totalForce };
     }
 
-    // 4. ✅ СТАНДАРТНЫЕ формулы CoP с правильными знаками
+    // ✅ ШАГ 5: Вычисляем CoP (теперь числитель и знаменатель согласованы)
     const xRaw = (this.sensorDistanceX / 2) * ((d2 + d3) - (d1 + d4)) / totalForce;
     const yRaw = (this.sensorDistanceY / 2) * ((d1 + d2) - (d3 + d4)) / totalForce;
 
-    // 5. ✅ АДАПТИВНОЕ ограничение координат на основе масштаба
-    const adaptiveMaxCoord = this.MAX_COORD * Math.min(1, this.dynamicScale * 100000);
-    const x = Math.max(-adaptiveMaxCoord, Math.min(adaptiveMaxCoord, xRaw));
-    const y = Math.max(-adaptiveMaxCoord, Math.min(adaptiveMaxCoord, yRaw));
+    // ШАГ 6: Проверка на валидность чисел
+    if (!isFinite(xRaw) || !isFinite(yRaw)) {
+      return { x: 0, y: 0, z: 0, f: totalForce };
+    }
 
-    // ✅ Периодическая диагностика
-    this.sampleCount++;
-    if (this.sampleCount % 1000 === 0) {
-      const avgForce = this.forceHistory.length > 0
-        ? this.forceHistory.reduce((a, b) => a + b, 0) / this.forceHistory.length
-        : 0;
-      console.log('🔍 CoP Диагностика:', {
-        sampleCount: this.sampleCount,
-        rawSensors: [sensors.d1, sensors.d2, sensors.d3, sensors.d4].map(v => v.toFixed(0)),
-        adjustedSensors: [d1_adj, d2_adj, d3_adj, d4_adj].map(v => v.toFixed(0)),
-        scaledSensors: [d1, d2, d3, d4].map(v => v.toFixed(3)),
-        totalForce: totalForce.toFixed(3),
-        avgForce: avgForce.toFixed(3),
-        adaptiveMinForce: adaptiveMinForce.toFixed(3),
-        result: [x.toFixed(1), y.toFixed(1)],
-        dynamicScale: this.dynamicScale,
-        adaptiveMaxCoord: adaptiveMaxCoord.toFixed(1)
-      });
+    // ШАГ 7: Ограничение
+    const x = Math.max(-this.MAX_COORD, Math.min(this.MAX_COORD, xRaw));
+    const y = Math.max(-this.MAX_COORD, Math.min(this.MAX_COORD, yRaw));
+
+    this.updateForceStatistics(totalForce);
+
+    if (this.sampleCount % 5000 === 0) {
+      this.logDiagnostics(sensors, { x, y }, totalForce);
     }
 
     return { x, y, z: 0, f: totalForce };
@@ -164,31 +110,42 @@ export class CoPCalculator {
 
   private updateForceStatistics(force: number): void {
     this.forceHistory.push(force);
-    if (this.forceHistory.length > 2000) {
+    if (this.forceHistory.length > 1000) {
       this.forceHistory.shift();
     }
   }
 
-  private getAdaptiveMinForce(): number {
-    if (this.forceHistory.length < 10) {
-      return this.MIN_FORCE;
-    }
-
-    // Вычисляем медиану силы как основу для адаптивного порога
-    const sorted = [...this.forceHistory].sort((a, b) => a - b);
-    const median = sorted[Math.floor(sorted.length / 2)];
-    
-    // Минимальная сила = 10% от медианы, но не меньше базового порога
-    return Math.max(this.MIN_FORCE, median * 0.1);
+  private logDiagnostics(sensors: SensorData, result: { x: number; y: number }, totalForce: number): void {
+    const avgForce = this.forceHistory.length > 0
+      ? this.forceHistory.reduce((a, b) => a + b, 0) / this.forceHistory.length
+      : 0;
+      
+    console.log('🔍 CoP Диагностика v2.4+:', {
+      sampleCount: this.sampleCount,
+      problemCount: this.problemCounter,
+      currentForce: totalForce.toFixed(3),
+      forceStats: {
+        avg: avgForce.toFixed(3),
+        min: Math.min(...this.forceHistory).toFixed(3),
+        max: Math.max(...this.forceHistory).toFixed(3),
+        samples: this.forceHistory.length
+      },
+      result: [result.x.toFixed(1), result.y.toFixed(1)],
+      settings: {
+        forceScale: this.FORCE_SCALE,
+        minTotalForce: this.MIN_TOTAL_FORCE,
+        maxCoord: this.MAX_COORD
+      }
+    });
   }
 
   reset(): void {
     this.offsets = { d1: 0, d2: 0, d3: 0, d4: 0 };
     this.isCalibrated = false;
-    this.dynamicScale = 1.0;
     this.sampleCount = 0;
     this.forceHistory = [];
-    console.log('🔄 CoPCalculator сброшен');
+    this.problemCounter = 0;
+    console.log('🔄 CoPCalculator v2.4+ reset');
   }
 
   configure(options: {
@@ -201,79 +158,15 @@ export class CoPCalculator {
     if (options.sensorDistanceY !== undefined) {
       this.sensorDistanceY = options.sensorDistanceY;
     }
-    console.log('🔧 Параметры CoPCalculator обновлены:', { 
+    console.log('🔧 Параметры CoPCalculator v2.4+ обновлены:', { 
       sensorDistanceX: this.sensorDistanceX, 
       sensorDistanceY: this.sensorDistanceY 
     });
   }
 
-  // ✅ РАСШИРЕННАЯ диагностика
-  getDiagnosticInfo(sensors: SensorData): {
-    rawSensors: SensorData;
-    adjustedSensors: SensorData;
-    scaledSensors: SensorData;
-    totalForceScaled: number;
-    adaptiveMinForce: number;
-    dynamicScale: number;
-    isCalibrated: boolean;
-    offsets: SensorData;
-    forceHistoryStats: {
-      count: number;
-      min: number;
-      max: number;
-      avg: number;
-      median: number;
-    };
-  } {
-    const adjusted = {
-      d1: sensors.d1 - this.offsets.d1,
-      d2: sensors.d2 - this.offsets.d2,
-      d3: sensors.d3 - this.offsets.d3,
-      d4: sensors.d4 - this.offsets.d4,
-    };
-
-    const scaled = {
-      d1: adjusted.d1 * this.dynamicScale,
-      d2: adjusted.d2 * this.dynamicScale,
-      d3: adjusted.d3 * this.dynamicScale,
-      d4: adjusted.d4 * this.dynamicScale,
-    };
-
-    const totalForceScaled = Math.abs(scaled.d1) + Math.abs(scaled.d2) + 
-                            Math.abs(scaled.d3) + Math.abs(scaled.d4);
-
-    // Статистика истории сил
-    const forceHistoryStats = this.forceHistory.length > 0 ? {
-      count: this.forceHistory.length,
-      min: Math.min(...this.forceHistory),
-      max: Math.max(...this.forceHistory),
-      avg: this.forceHistory.reduce((a, b) => a + b) / this.forceHistory.length,
-      median: [...this.forceHistory].sort((a, b) => a - b)[Math.floor(this.forceHistory.length / 2)]
-    } : {
-      count: 0,
-      min: 0,
-      max: 0,
-      avg: 0,
-      median: 0
-    };
-
-    return {
-      rawSensors: sensors,
-      adjustedSensors: adjusted,
-      scaledSensors: scaled,
-      totalForceScaled,
-      adaptiveMinForce: this.getAdaptiveMinForce(),
-      dynamicScale: this.dynamicScale,
-      isCalibrated: this.isCalibrated,
-      offsets: this.offsets,
-      forceHistoryStats
-    };
-  }
-
-  // ✅ Метод для экспорта статистики
   getStats(): {
     sampleCount: number;
-    dynamicScale: number;
+    problemCount: number;
     forceHistorySize: number;
     avgForce: number;
     isCalibrated: boolean;
@@ -284,7 +177,7 @@ export class CoPCalculator {
 
     return {
       sampleCount: this.sampleCount,
-      dynamicScale: this.dynamicScale,
+      problemCount: this.problemCounter,
       forceHistorySize: this.forceHistory.length,
       avgForce,
       isCalibrated: this.isCalibrated

@@ -19,7 +19,7 @@
 	let frameCount = 0;
 	let lastDiagnosticTime = 0;
 	let lastRenderPosition: Vector2D = { x: 0, y: 0 };
-	let isStoreInitialized = false; // ✅ ИСПРАВЛЕНО: Локальная переменная
+	let isStoreInitialized = false;
 
 	// Медицинские метрики
 	let stabilityScore = 0;
@@ -43,12 +43,11 @@
 	onMount(() => {
 		console.log('🎨 MedicalStabilogramCanvas mounted');
 		ctx = canvas.getContext('2d')!;
-
-		// ✅ ИСПРАВЛЕНО: Принудительная инициализация без проверки приватного свойства
+		
 		console.log('🚀 Force initializing stabilogram store from canvas');
 		stabilogramStore.initialize({ x: width, y: height });
-		isStoreInitialized = true; // ✅ Устанавливаем флаг
-
+		isStoreInitialized = true;
+		
 		sessionStartTime = performance.now();
 		animate();
 	});
@@ -63,72 +62,90 @@
 	function animate() {
 		frameCount++;
 		const now = performance.now();
-
+		
 		// Получаем позицию для рендера
 		const renderPos = stabilogramStore.getRenderPosition();
-
+		
 		// ✅ ДЕТАЛЬНАЯ ДИАГНОСТИКА ВСЕГО ПАЙПЛАЙНА
 		const currentSample = $stabilogramStore.currentSample;
 		if (currentSample) {
 			// Вычисляем дистанции на каждом этапе
 			const rawDistance = Math.sqrt(currentSample.raw.x ** 2 + currentSample.raw.y ** 2);
-			const centeredDistance = Math.sqrt(
-				currentSample.centered.x ** 2 + currentSample.centered.y ** 2
-			);
-			const filteredDistance = Math.sqrt(
-				currentSample.filtered.x ** 2 + currentSample.filtered.y ** 2
-			);
+			const centeredDistance = Math.sqrt(currentSample.centered.x ** 2 + currentSample.centered.y ** 2);
+			const filteredDistance = Math.sqrt(currentSample.filtered.x ** 2 + currentSample.filtered.y ** 2);
 			const mmDistance = Math.sqrt(currentSample.mm.x ** 2 + currentSample.mm.y ** 2);
 			const renderDistance = Math.sqrt(renderPos.x ** 2 + renderPos.y ** 2);
-
+			
 			// Получаем данные интерполятора
-			const interpolatorDebug = (stabilogramStore as any).getInterpolatorDebug?.() || {};
+			const interpolatorDebug = stabilogramStore.getInterpolatorDebug?.() || {};
 			const velocity = $stabilogramStore.velocity;
 			const speed = Math.sqrt(velocity.x ** 2 + velocity.y ** 2);
-
-			// ✅ ДЕТЕКТОР РЕЗКИХ ДВИЖЕНИЙ
+			
+			// ✅ ДЕТЕКТОР РЫВКОВ ПРИ ПЛАВНЫХ ДВИЖЕНИЯХ
+			const isGentleMovement = speed > 20 && speed < 100; // Плавное движение
+			
+			if (isGentleMovement) {
+				// Детектируем рывок: когда render позиция сильно отличается от mm позиции
+				const renderToMmDiff = Math.abs(renderDistance - mmDistance);
+				const renderDirection = Math.atan2(renderPos.y, renderPos.x);
+				const mmDirection = Math.atan2(currentSample.mm.y, currentSample.mm.x);
+				const angleDiff = Math.abs(renderDirection - mmDirection) * 180 / Math.PI;
+				
+				if (renderToMmDiff > 10 || angleDiff > 30) { // Рывок при плавном движении!
+					console.group(`🔸 РЫВОК ПРИ ПЛАВНОМ ДВИЖЕНИИ (speed: ${speed.toFixed(1)}mm/s)`);
+					
+					console.log('📍 Подробный пайплайн:', {
+						'1_raw': { x: currentSample.raw.x.toFixed(1), y: currentSample.raw.y.toFixed(1), dist: rawDistance.toFixed(1) },
+						'2_centered': { x: currentSample.centered.x.toFixed(1), y: currentSample.centered.y.toFixed(1), dist: centeredDistance.toFixed(1) },
+						'3_filtered': { x: currentSample.filtered.x.toFixed(1), y: currentSample.filtered.y.toFixed(1), dist: filteredDistance.toFixed(1) },
+						'4_mm': { x: currentSample.mm.x.toFixed(1), y: currentSample.mm.y.toFixed(1), dist: mmDistance.toFixed(1) },
+						'5_render': { x: renderPos.x.toFixed(1), y: renderPos.y.toFixed(1), dist: renderDistance.toFixed(1) }
+					});
+					
+					console.log('📐 Рывок анализ:', {
+						distanceDiff: renderToMmDiff.toFixed(1) + 'mm',
+						angleDiff: angleDiff.toFixed(1) + '°',
+						mmDirection: mmDirection.toFixed(2) + ' rad',
+						renderDirection: renderDirection.toFixed(2) + ' rad',
+						velocity: { vx: velocity.x.toFixed(1), vy: velocity.y.toFixed(1) },
+						speed: speed.toFixed(1) + 'mm/s'
+					});
+					
+					console.log('⏱️ Timing:', {
+						deviceTime: currentSample.deviceTime,
+						clientTime: currentSample.clientTime,
+						renderTime: now,
+						age: (now - currentSample.clientTime).toFixed(1) + 'ms',
+						packetRate: $stabilogramStore.packetRate + 'Hz'
+					});
+					
+					// ✅ ДИАГНОСТИКА ФИЛЬТРОВ
+					console.log('🔧 Фильтры состояние:', interpolatorDebug);
+					
+					console.groupEnd();
+				}
+			}
+			
+			// ✅ ОБЫЧНАЯ ДИАГНОСТИКА РЕЗКИХ ДВИЖЕНИЙ
 			const maxStageJump = Math.max(
 				Math.abs(rawDistance - centeredDistance),
-				Math.abs(centeredDistance - filteredDistance),
+				Math.abs(centeredDistance - filteredDistance), 
 				Math.abs(filteredDistance - mmDistance),
 				Math.abs(mmDistance - renderDistance)
 			);
-
-			// Логируем только при больших скачках между этапами
-			if (maxStageJump > 15 || speed > 100) {
-				// 15мм разница между этапами или скорость > 100мм/с
-				console.group(
-					`🔥 РЕЗКОЕ ДВИЖЕНИЕ ДЕТЕКТИРОВАНО (jump: ${maxStageJump.toFixed(1)}mm, speed: ${speed.toFixed(1)}mm/s)`
-				);
-
+			
+			// Логируем только при больших скачках между этапами ИЛИ высокой скорости
+			if (maxStageJump > 15 || speed > 200) {
+				console.group(`🔥 РЕЗКОЕ ДВИЖЕНИЕ ДЕТЕКТИРОВАНО (jump: ${maxStageJump.toFixed(1)}mm, speed: ${speed.toFixed(1)}mm/s)`);
+				
 				console.log('📍 Пайплайн позиций:', {
-					'1_raw': {
-						x: currentSample.raw.x.toFixed(1),
-						y: currentSample.raw.y.toFixed(1),
-						dist: rawDistance.toFixed(1)
-					},
-					'2_centered': {
-						x: currentSample.centered.x.toFixed(1),
-						y: currentSample.centered.y.toFixed(1),
-						dist: centeredDistance.toFixed(1)
-					},
-					'3_filtered': {
-						x: currentSample.filtered.x.toFixed(1),
-						y: currentSample.filtered.y.toFixed(1),
-						dist: filteredDistance.toFixed(1)
-					},
-					'4_mm': {
-						x: currentSample.mm.x.toFixed(1),
-						y: currentSample.mm.y.toFixed(1),
-						dist: mmDistance.toFixed(1)
-					},
-					'5_render': {
-						x: renderPos.x.toFixed(1),
-						y: renderPos.y.toFixed(1),
-						dist: renderDistance.toFixed(1)
-					}
+					'1_raw': { x: currentSample.raw.x.toFixed(1), y: currentSample.raw.y.toFixed(1), dist: rawDistance.toFixed(1) },
+					'2_centered': { x: currentSample.centered.x.toFixed(1), y: currentSample.centered.y.toFixed(1), dist: centeredDistance.toFixed(1) },
+					'3_filtered': { x: currentSample.filtered.x.toFixed(1), y: currentSample.filtered.y.toFixed(1), dist: filteredDistance.toFixed(1) },
+					'4_mm': { x: currentSample.mm.x.toFixed(1), y: currentSample.mm.y.toFixed(1), dist: mmDistance.toFixed(1) },
+					'5_render': { x: renderPos.x.toFixed(1), y: renderPos.y.toFixed(1), dist: renderDistance.toFixed(1) }
 				});
-
+				
 				console.log('⏱️ Timing:', {
 					deviceTime: currentSample.deviceTime,
 					clientTime: currentSample.clientTime,
@@ -136,14 +153,14 @@
 					age: (now - currentSample.clientTime).toFixed(1) + 'ms',
 					packetRate: $stabilogramStore.packetRate + 'Hz'
 				});
-
+				
 				console.log('🔧 Фильтры:', {
 					interpolator: interpolatorDebug,
 					velocity: { vx: velocity.x.toFixed(1), vy: velocity.y.toFixed(1) },
 					speed: speed.toFixed(1)
 				});
-
-				// Проверяем, есть ли "jump to center" - когда render позиция сильно ближе к центру чем mm позиция
+				
+				// Проверяем, есть ли "jump to center"
 				const jumpToCenter = mmDistance > 30 && renderDistance < mmDistance * 0.7;
 				if (jumpToCenter) {
 					console.error('🚨 ДЕТЕКТИРОВАН "JUMP TO CENTER"!', {
@@ -152,16 +169,18 @@
 						ratio: (renderDistance / mmDistance).toFixed(2)
 					});
 				}
-
+				
 				console.groupEnd();
 			}
 		}
+		
 		// ✅ ДИАГНОСТИКА КАЖДЫЕ 2 СЕКУНДЫ
 		if (now - lastDiagnosticTime > 2000) {
 			const moved = Math.sqrt(
-				(renderPos.x - lastRenderPosition.x) ** 2 + (renderPos.y - lastRenderPosition.y) ** 2
+				(renderPos.x - lastRenderPosition.x)**2 + 
+				(renderPos.y - lastRenderPosition.y)**2
 			);
-
+			
 			console.log('🎨 Canvas diagnostic:', {
 				frameCount,
 				fps: Math.round(frameCount / 2),
@@ -175,7 +194,7 @@
 					packetRate: $stabilogramStore.packetRate
 				}
 			});
-
+			
 			frameCount = 0;
 			lastDiagnosticTime = now;
 			lastRenderPosition = { ...renderPos };
@@ -387,7 +406,6 @@
 				value: `${((performance.now() - sessionStartTime) / 1000).toFixed(0)} с`,
 				color: '#6b7280'
 			},
-			// ✅ НОВАЯ МЕТРИКА: Пакеты в секунду
 			{
 				label: 'Частота данных',
 				value: `${$stabilogramStore.packetRate} Гц`,
@@ -520,20 +538,25 @@
 		ctx.font = '12px monospace';
 		ctx.fillStyle = medicalMode ? 'rgba(0,0,0,0.7)' : 'rgba(255,255,255,0.8)';
 
+		const interpolatorDebug = (stabilogramStore.getInterpolatorDebug?.() || {}) as any;
+
 		const lines = [
 			`Position: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}) mm`,
 			`Velocity: (${velocity.x.toFixed(1)}, ${velocity.y.toFixed(1)}) mm/s`,
 			`Scale: ${scale.toFixed(1)} px/mm`,
-			`Store init: ${isStoreInitialized}`, // ✅ ИСПРАВЛЕНО
+			`Store init: ${isStoreInitialized}`,
 			`Connected: WS=${isConnected} DEV=${$stabilogramStore.isDeviceConnected}`,
 			`Calibrated: ${$stabilogramStore.isCalibrated}`,
 			`Packet rate: ${$stabilogramStore.packetRate} Hz`,
 			`Mode: ${medicalMode ? 'Medical' : 'Game'}`,
-			`Trail: ${trail.length} points`
+			`Trail: ${trail.length} points`,
+			`Stream active: ${interpolatorDebug.isStreamActive ?? 'N/A'}`,
+			`Time since data: ${(interpolatorDebug.timeSinceLastData ?? 0).toFixed(0)}ms`,
+			`Samples buffer: ${interpolatorDebug.samplesCount ?? 0}`,
 		];
 
 		lines.forEach((line, i) => {
-			ctx.fillText(line, 10, height - 140 + i * 15);
+			ctx.fillText(line, 10, height - 180 + i * 15);
 		});
 	}
 

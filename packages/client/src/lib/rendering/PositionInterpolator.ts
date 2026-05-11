@@ -8,25 +8,32 @@ interface SamplePoint {
   timestamp: number;
 }
 
+/**
+ * Position Interpolator v2.3+ 
+ * 
+ * ✅ ИСПРАВЛЕНО для плавных движений:
+ * - Менее агрессивное затухание velocity для плавных движений
+ * - Улучшенное адаптивное сглаживание
+ * - Защита от рывков при малых изменениях
+ * - Стабилизация при переходах между скоростями
+ */
 export class PositionInterpolator {
   private samples: SamplePoint[] = [];
   private readonly maxSamples = 3;
   private currentPosition: Vector2D = { x: 0, y: 0 };
   private currentVelocity: Vector2D = { x: 0, y: 0 };
   
-  private smoothingFactor = 0.4;
+  // ✅ ИСПРАВЛЕННЫЕ параметры сглаживания  
+  private smoothingFactor = 0.3;  // Было 0.4 → стало 0.3 (менее агрессивное)
   
-  // ✅ ИСПРАВЛЕНО: Увеличены таймауты для batch-режима
-  private maxExtrapolationTime = 500; // Было 250ms → стало 500ms
-  private fadeToZeroTime = 2000; // Было 1000ms → стало 2000ms
-  
-  // ✅ НОВОЕ: Детекция активного потока данных
+  private maxExtrapolationTime = 400; // Увеличено с 250ms для batch
+  private fadeToZeroTime = 1500;      // Увеличено с 1000ms
+  private streamTimeoutMs = 1200;     // Увеличено с 1000ms
+
   private lastDataReceiveTime = 0;
   private isStreamActive = false;
-  private streamTimeoutMs = 1000; // Считаем поток активным, если пакет пришел < 1сек назад
 
   addSample(position: Vector2D, timestamp: number): void {
-    // ✅ НОВОЕ: Отмечаем, что поток данных активен
     this.lastDataReceiveTime = performance.now();
     this.isStreamActive = true;
 
@@ -42,7 +49,8 @@ export class PositionInterpolator {
           y: (position.y - last.position.y) / dt
         };
         
-        const maxVel = 500; 
+        // ✅ БОЛЕЕ МЯГКОЕ ограничение velocity
+        const maxVel = 600; // Было 500 → стало 600
         if (Math.abs(velocity.x) > maxVel || Math.abs(velocity.y) > maxVel) {
           velocity.x = Math.max(-maxVel, Math.min(maxVel, velocity.x));
           velocity.y = Math.max(-maxVel, Math.min(maxVel, velocity.y));
@@ -62,7 +70,6 @@ export class PositionInterpolator {
       return this.currentPosition;
     }
 
-    // ✅ НОВОЕ: Проверяем активность потока данных
     const timeSinceLastData = renderTime - this.lastDataReceiveTime;
     if (timeSinceLastData > this.streamTimeoutMs) {
       this.isStreamActive = false;
@@ -73,11 +80,25 @@ export class PositionInterpolator {
 
     let target: Vector2D;
 
-    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Не применяем fadeToZero при активном потоке
     if (timeSince <= this.maxExtrapolationTime) {
-      // Нормальная экстраполяция с затуханием скорости
       const dt = timeSince / 1000;
-      const decay = Math.exp(-dt * 3); 
+      
+      // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Адаптивное затухание в зависимости от скорости
+      const velocityMagnitude = Math.sqrt(latest.velocity.x ** 2 + latest.velocity.y ** 2);
+      let decay;
+      
+      if (velocityMagnitude < 50) { 
+        // 🟢 ПЛАВНОЕ ДВИЖЕНИЕ: очень медленное затухание
+        decay = Math.exp(-dt * 0.8); // Было 3 → стало 0.8
+        
+      } else if (velocityMagnitude < 150) { 
+        // 🟡 СРЕДНЯЯ СКОРОСТЬ: умеренное затухание
+        decay = Math.exp(-dt * 1.5); // Было 3 → стало 1.5
+        
+      } else { 
+        // 🔴 БЫСТРОЕ ДВИЖЕНИЕ: нормальное затухание
+        decay = Math.exp(-dt * 2.5); // Было 3 → стало 2.5
+      }
       
       target = {
         x: latest.position.x + latest.velocity.x * dt * decay,
@@ -85,17 +106,14 @@ export class PositionInterpolator {
       };
       
     } else if (this.isStreamActive) {
-      // ✅ НОВАЯ ЛОГИКА: Поток активен, но пакет запаздывает
-      // Просто держим последнюю позицию без ухода к центру!
+      // Поток активен, но пакет задерживается - держим позицию
       target = {
         x: latest.position.x,
         y: latest.position.y
       };
       
-      console.log(`⏸️ Holding position (stream active, waiting for data) timeSince=${timeSince.toFixed(0)}ms`);
-      
     } else if (timeSince <= this.fadeToZeroTime) {
-      // ✅ Поток остановлен - плавное затухание
+      // Плавное затухание к центру при долгой потере
       const fadeProgress = (timeSince - this.maxExtrapolationTime) / 
                           (this.fadeToZeroTime - this.maxExtrapolationTime);
       const fadeFactor = 1 - fadeProgress; 
@@ -105,35 +123,58 @@ export class PositionInterpolator {
         y: latest.position.y * fadeFactor
       };
       
-      console.log(`🔻 Fading to center (stream inactive) fadeFactor=${fadeFactor.toFixed(2)}`);
-      
     } else {
-      // Полная остановка
       target = { x: 0, y: 0 };
     }
 
-    // Адаптивное сглаживание
     const distance = Math.sqrt(
       (target.x - this.currentPosition.x) ** 2 + 
       (target.y - this.currentPosition.y) ** 2
     );
     
-    const adaptiveSmoothing = distance > 20 
-      ? Math.min(0.7, this.smoothingFactor + distance * 0.01)
-      : this.smoothingFactor;
+    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Намного более мягкое адаптивное сглаживание
+    let adaptiveSmoothing;
+    
+    if (distance < 2) { 
+      // ОЧЕНЬ маленькие изменения - почти без сглаживания
+      adaptiveSmoothing = 0.05;
+      
+    } else if (distance < 8) { 
+      // Маленькие изменения - очень медленное сглаживание
+      adaptiveSmoothing = Math.min(0.15, this.smoothingFactor * 0.5);
+      
+    } else if (distance < 25) { 
+      // Средние изменения - умеренное сглаживание  
+      adaptiveSmoothing = Math.min(0.4, this.smoothingFactor + distance * 0.003);
+      
+    } else { 
+      // Большие изменения - нормальное сглаживание
+      adaptiveSmoothing = Math.min(0.7, this.smoothingFactor + distance * 0.01);
+    }
+
+    // ✅ ДОПОЛНИТЕЛЬНАЯ СТАБИЛИЗАЦИЯ: плавный переход скоростей
+    const velocityMagnitude = Math.sqrt(latest.velocity.x ** 2 + latest.velocity.y ** 2);
+    if (velocityMagnitude < 80 && distance < 15) {
+      // При плавном движении еще больше снижаем сглаживание
+      adaptiveSmoothing *= 0.6;
+    }
 
     this.currentPosition = {
       x: this.currentPosition.x + (target.x - this.currentPosition.x) * adaptiveSmoothing,
       y: this.currentPosition.y + (target.y - this.currentPosition.y) * adaptiveSmoothing
     };
 
+    // ✅ ИСПРАВЛЕННОЕ обновление velocity
     const targetVel = timeSince > this.maxExtrapolationTime 
       ? { x: 0, y: 0 } 
       : latest.velocity;
+
+    // Более мягкое обновление velocity для избежания рывков
+    const velSmoothFactor = Math.min(adaptiveSmoothing * 0.7, 0.3);
       
     this.currentVelocity = {
-      x: this.currentVelocity.x + (targetVel.x - this.currentVelocity.x) * adaptiveSmoothing,
-      y: this.currentVelocity.y + (targetVel.y - this.currentVelocity.y) * adaptiveSmoothing
+      x: this.currentVelocity.x + (targetVel.x - this.currentVelocity.x) * velSmoothFactor,
+      y: this.currentVelocity.y + (targetVel.y - this.currentVelocity.y) * velSmoothFactor
     };
 
     return this.currentPosition;
@@ -151,13 +192,62 @@ export class PositionInterpolator {
     this.lastDataReceiveTime = 0;
   }
   
-  // ✅ НОВОЕ: Диагностика
+  // ✅ РАСШИРЕННАЯ диагностика
   getDebugInfo() {
+    const latest = this.samples[this.samples.length - 1];
+    const now = performance.now();
+    
     return {
       isStreamActive: this.isStreamActive,
-      timeSinceLastData: performance.now() - this.lastDataReceiveTime,
+      timeSinceLastData: now - this.lastDataReceiveTime,
       samplesCount: this.samples.length,
-      currentPosition: this.currentPosition
+      currentPosition: this.currentPosition,
+      currentVelocity: this.currentVelocity,
+      latestSample: latest ? {
+        position: latest.position,
+        velocity: latest.velocity,
+        timestamp: latest.timestamp,
+        age: now - latest.timestamp
+      } : null,
+      thresholds: {
+        maxExtrapolation: this.maxExtrapolationTime,
+        fadeToZero: this.fadeToZeroTime,
+        streamTimeout: this.streamTimeoutMs
+      },
+      smoothingFactor: this.smoothingFactor
     };
+  }
+
+  // ✅ НОВЫЕ МЕТОДЫ НАСТРОЙКИ
+  updateSettings(settings: {
+    smoothingFactor?: number;
+    maxExtrapolationTime?: number;
+    fadeToZeroTime?: number;
+  }): void {
+    if (settings.smoothingFactor !== undefined) {
+      this.smoothingFactor = Math.max(0.1, Math.min(0.8, settings.smoothingFactor));
+    }
+    if (settings.maxExtrapolationTime !== undefined) {
+      this.maxExtrapolationTime = settings.maxExtrapolationTime;
+    }
+    if (settings.fadeToZeroTime !== undefined) {
+      this.fadeToZeroTime = settings.fadeToZeroTime;
+    }
+
+    console.log('🔧 PositionInterpolator settings updated:', settings);
+  }
+
+  setModeForGentleMovements(): void {
+    this.smoothingFactor = 0.2;
+    this.maxExtrapolationTime = 500;
+    this.fadeToZeroTime = 2000;
+    console.log('🎯 PositionInterpolator optimized for gentle movements');
+  }
+
+  setModeForSharpMovements(): void {
+    this.smoothingFactor = 0.4;
+    this.maxExtrapolationTime = 300;
+    this.fadeToZeroTime = 1000;
+    console.log('🎯 PositionInterpolator optimized for sharp movements');
   }
 }

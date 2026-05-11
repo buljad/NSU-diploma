@@ -3,24 +3,18 @@
 /**
  * Медианный фильтр центра давления (CoP) v2.3+
  *
- * ✅ НАЗНАЧЕНИЕ:
- * - Фильтрация аппаратных выбросов в реальном времени (<1ms задержка)
- * - Детекция и реанимация замираний точки
- * - Адаптивное сглаживание для резких, но валидных движений
- *
- * ✅ КРИТИЧЕСКИЕ УЛУЧШЕНИЯ для резких движений:
- * - Раздельные пороги для плавных (20мм) и резких (60мм) движений
- * - Адаптивное сглаживание вместо жесткого ограничения
- * - Сохранение 70% амплитуды резких движений (было 30%)
- * - Доверие к быстрым движениям пациента
+ * ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ:
+ * - Правильная инициализация буфера при первом вызове
+ * - Защита от мусора в незаполненном буфере
+ * - Корректный сброс состояния после reset()
  */
 
 export interface FilteredCoP {
   x: number;
   y: number;
   wasFiltered: boolean;
-  confidence: number; // 0-1, уверенность в данных
-  filterType?: string; // Тип примененной фильтрации
+  confidence: number;
+  filterType?: string;
 }
 
 export interface SmartFilterConfig {
@@ -29,23 +23,26 @@ export interface SmartFilterConfig {
   frozenThreshold: number;
   epsilon: number;
 
-  // ✅ НОВЫЕ ПАРАМЕТРЫ для резких движений
-  gentleJumpMm: number; // Порог плавных движений (20мм)
-  sharpJumpMm: number; // Порог резких движений (60мм)
-  extremeJumpMm: number; // Порог экстремальных выбросов (100мм)
+  gentleJumpMm: number;
+  sharpJumpMm: number;
+  extremeJumpMm: number;
 
-  gentleSmoothFactor: number; // Сглаживание плавных движений (0.2)
-  sharpSmoothFactor: number; // Сглаживание резких движений (0.6)
-  extremeSmoothFactor: number; // Сглаживание выбросов (0.3)
+  gentleSmoothFactor: number;
+  sharpSmoothFactor: number;
+  extremeSmoothFactor: number;
 
-  adaptiveSmoothing: boolean; // Включить адаптивное сглаживание
-  velocityAware: boolean; // Учитывать скорость движения
-  enableReanimation: boolean; // Реанимация замираний
+  adaptiveSmoothing: boolean;
+  velocityAware: boolean;
+  enableReanimation: boolean;
+
+  ignoreZeroInputs: boolean;
+  zeroInputThreshold: number;
 }
 
 export interface FilterStats {
   totalSamples: number;
   filteredSamples: number;
+  zeroInputsIgnored: number;
   gentleMovements: number;
   sharpMovements: number;
   extremeOutliers: number;
@@ -61,31 +58,33 @@ export class CoPSmartFilter {
 
   private lastX = 0;
   private lastY = 0;
-  private lastVelocityX = 0;
-  private lastVelocityY = 0;
+  private lastValidX = 0;
+  private lastValidY = 0;
   private lastTimestamp = 0;
 
   private frozenCount = 0;
   private stats: FilterStats;
 
   private config: SmartFilterConfig = {
-    bufferSize: 5,
+    bufferSize: 3, // ✅ Снижаем до 3 для мгновенной реакции в покое
     maxJumpMm: 40,
-    frozenThreshold: 10,
-    epsilon: 0.05,
+    frozenThreshold: 30, // ✅ Увеличиваем (реже детектируем замирание)
+    epsilon: 0.1, // ✅ Чуть больше мертвая зона
 
-    // ✅ КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ для резких движений пациента:
-    gentleJumpMm: 30, // Было 20mm → стало 30mm
-    sharpJumpMm: 120, // ✅ БЫЛО 60mm → стало 120mm (КЛЮЧЕВОЕ!)
-    extremeJumpMm: 200, // Было 100mm → стало 200mm
+    gentleJumpMm: 15,
+    sharpJumpMm: 100,
+    extremeJumpMm: 200,
 
-    gentleSmoothFactor: 0.1, // Было 0.2 → стало 0.1 (меньше фильтрации)
-    sharpSmoothFactor: 0.3, // ✅ БЫЛО 0.6 → стало 0.3 (70% сохраняем!)
-    extremeSmoothFactor: 0.7, // Было 0.8 → стало 0.7
+    gentleSmoothFactor: 0.1,
+    sharpSmoothFactor: 0.3,
+    extremeSmoothFactor: 0.7,
 
     adaptiveSmoothing: true,
     velocityAware: true,
-    enableReanimation: true,
+    enableReanimation: false, // 🚨 ОТКЛЮЧАЕМ. Это была причина рывков в покое!
+
+    ignoreZeroInputs: true,
+    zeroInputThreshold: 0.1, // ✅ Согласовано с новым CoPCalculator
   };
 
   constructor(config?: Partial<SmartFilterConfig>) {
@@ -96,10 +95,11 @@ export class CoPSmartFilter {
     this.initializeBuffers();
     this.stats = this.createInitialStats();
 
-    console.log("🎯 CoPSmartFilter initialized with adaptive smoothing:", {
+    console.log("🎯 CoPSmartFilter v2.3+ initialized (buffer-safe):", {
       gentle: `${this.config.gentleJumpMm}mm → ${((1 - this.config.gentleSmoothFactor) * 100).toFixed(0)}%`,
       sharp: `${this.config.sharpJumpMm}mm → ${((1 - this.config.sharpSmoothFactor) * 100).toFixed(0)}%`,
       extreme: `${this.config.extremeJumpMm}mm → ${((1 - this.config.extremeSmoothFactor) * 100).toFixed(0)}%`,
+      ignoreZeros: this.config.ignoreZeroInputs,
     });
   }
 
@@ -107,6 +107,7 @@ export class CoPSmartFilter {
     return {
       totalSamples: 0,
       filteredSamples: 0,
+      zeroInputsIgnored: 0,
       gentleMovements: 0,
       sharpMovements: 0,
       extremeOutliers: 0,
@@ -122,16 +123,53 @@ export class CoPSmartFilter {
     this.isBufferFull = false;
   }
 
-  /**
-   * Основной метод фильтрации
-   */
   filter(
     input: { x: number; y: number; z?: number; f?: number },
     timestamp: number,
   ): FilteredCoP {
     this.stats.totalSamples++;
 
-    // ✅ ИНИЦИАЛИЗАЦИЯ: Первый вызов
+    // ✅ НОВАЯ ЛОГИКА: Проверяем на нулевые входы от CoPCalculator
+    const inputDistance = Math.sqrt(input.x ** 2 + input.y ** 2);
+    const isZeroInput = inputDistance < this.config.zeroInputThreshold;
+
+    if (
+      isZeroInput &&
+      this.config.ignoreZeroInputs &&
+      this.stats.totalSamples > 1
+    ) {
+      this.stats.zeroInputsIgnored++;
+
+      if (this.stats.zeroInputsIgnored % 100 === 1) {
+        console.warn(
+          "🚫 CoPSmartFilter: Ignoring zero input from CoPCalculator:",
+          {
+            input: { x: input.x.toFixed(3), y: input.y.toFixed(3) },
+            ignoredCount: this.stats.zeroInputsIgnored,
+            returningLast: {
+              x: this.lastValidX.toFixed(1),
+              y: this.lastValidY.toFixed(1),
+            },
+          },
+        );
+      }
+
+      return {
+        x: this.lastValidX,
+        y: this.lastValidY,
+        wasFiltered: true,
+        confidence: 0.5,
+        filterType: `zero-input-ignored (count: ${this.stats.zeroInputsIgnored})`,
+      };
+    }
+
+    // ✅ Обновляем последние валидные координаты
+    if (!isZeroInput) {
+      this.lastValidX = input.x;
+      this.lastValidY = input.y;
+    }
+
+    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Первый вызов - инициализация без фильтрации
     if (this.stats.totalSamples === 1) {
       this.initializeWithFirstSample(input.x, input.y, timestamp);
       return {
@@ -152,31 +190,55 @@ export class CoPSmartFilter {
       Math.pow(input.x - this.lastX, 2) + Math.pow(input.y - this.lastY, 2),
     );
 
-    // ✅ ШАГ 2: Оценка скорости (если включена)
+    // ✅ ШАГ 2: Оценка скорости
     let currentVelocity = 0;
     if (this.config.velocityAware && dt > 0.001 && dt < 0.5) {
       currentVelocity = jumpDistance / dt;
     }
 
-    // ✅ ШАГ 3: Добавляем в кольцевой буфер
-    this.addToBuffer(input.x, input.y);
+    // ✅ ШАГ 3: Добавляем в кольцевой буфер (только валидные значения)
+    if (!isZeroInput) {
+      this.addToBuffer(input.x, input.y);
+    }
 
-    // ✅ ШАГ 4: Определяем тип движения и применяем соответствующую фильтрацию
+    // ✅ ШАГ 4: КРИТИЧЕСКАЯ ПРОВЕРКА - не применяем медианную фильтрацию пока буфер не заполнен!
+    if (!this.isBufferFull) {
+      // Буфер еще заполняется - просто передаем данные с минимальным сглаживанием
+      const smoothFactor = 0.3;
+      const filteredX =
+        this.lastX + (input.x - this.lastX) * (1 - smoothFactor);
+      const filteredY =
+        this.lastY + (input.y - this.lastY) * (1 - smoothFactor);
+
+      this.lastX = filteredX;
+      this.lastY = filteredY;
+      this.lastTimestamp = timestamp;
+
+      return {
+        x: filteredX,
+        y: filteredY,
+        wasFiltered: true,
+        confidence: 0.7,
+        filterType: `buffer-filling (${this.head}/${this.config.bufferSize})`,
+      };
+    }
+
+    // ✅ ШАГ 5: Определяем тип движения и применяем фильтрацию (только если буфер полный!)
     const filterResult = this.applyAdaptiveFilter(
       input,
       jumpDistance,
       currentVelocity,
     );
 
-    // ✅ ШАГ 5: Детекция замирания
-    if (this.config.enableReanimation) {
+    // ✅ ШАГ 6: Детекция замирания (только для не-нулевых входов)
+    if (this.config.enableReanimation && !isZeroInput) {
       this.detectAndHandleFreezing(filterResult);
     }
 
-    // ✅ ШАГ 6: Обновляем состояние
+    // ✅ ШАГ 7: Обновляем состояние
     this.updateState(filterResult, timestamp);
 
-    // ✅ ШАГ 7: Обновляем статистику
+    // ✅ ШАГ 8: Обновляем статистику
     this.updateStats(filterResult);
 
     return filterResult;
@@ -187,12 +249,24 @@ export class CoPSmartFilter {
     y: number,
     timestamp: number,
   ): void {
+    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Заполняем буфер первым значением
     this.bufferX.fill(x);
     this.bufferY.fill(y);
     this.lastX = x;
     this.lastY = y;
+    this.lastValidX = x;
+    this.lastValidY = y;
     this.lastTimestamp = timestamp;
     this.frozenCount = 0;
+
+    // ✅ НОВОЕ: Принудительно отмечаем буфер как незаполненный
+    this.head = 1; // Первый элемент уже записан
+    this.isBufferFull = false;
+
+    console.log("🎯 CoPSmartFilter initialized with first sample:", {
+      x: x.toFixed(1),
+      y: y.toFixed(1),
+    });
   }
 
   private addToBuffer(x: number, y: number): void {
@@ -202,6 +276,9 @@ export class CoPSmartFilter {
 
     if (!this.isBufferFull && this.head === 0) {
       this.isBufferFull = true;
+      console.log(
+        "✅ CoPSmartFilter buffer is now FULL, median filtering enabled",
+      );
     }
   }
 
@@ -216,17 +293,14 @@ export class CoPSmartFilter {
     let confidence: number;
 
     if (jumpDistance <= this.config.gentleJumpMm) {
-      // 🟢 ПЛАВНОЕ ДВИЖЕНИЕ (0-20мм)
       movementType = "gentle";
       smoothFactor = this.config.gentleSmoothFactor;
       confidence = 1.0;
       this.stats.gentleMovements++;
     } else if (jumpDistance <= this.config.sharpJumpMm) {
-      // 🟡 РЕЗКОЕ ДВИЖЕНИЕ (20-60мм) - КЛЮЧЕВАЯ ЗОНА ПРОБЛЕМЫ
       movementType = "sharp";
 
       if (this.config.adaptiveSmoothing) {
-        // ✅ АДАПТИВНОЕ СГЛАЖИВАНИЕ: Больше сглаживания для больших скачков
         const sharpnessRatio =
           (jumpDistance - this.config.gentleJumpMm) /
           (this.config.sharpJumpMm - this.config.gentleJumpMm);
@@ -239,18 +313,17 @@ export class CoPSmartFilter {
         smoothFactor = this.config.sharpSmoothFactor;
       }
 
-      confidence = 0.8;
+      confidence = 0.9;
       this.stats.sharpMovements++;
     } else {
-      // 🔴 ЭКСТРЕМАЛЬНЫЙ ВЫБРОС (>60мм)
       movementType = "extreme";
       smoothFactor = this.config.extremeSmoothFactor;
-      confidence = 0.3;
+      confidence = 0.4;
       this.stats.extremeOutliers++;
     }
 
     // ✅ ПРИМЕНЯЕМ ФИЛЬТРАЦИЮ
-    if (movementType === "gentle") {
+    if (movementType === "gentle" || smoothFactor < 0.1) {
       // Плавные движения почти не фильтруем
       return {
         x: input.x,
@@ -260,6 +333,20 @@ export class CoPSmartFilter {
         filterType: movementType,
       };
     } else {
+      // ✅ КРИТИЧЕСКАЯ ПРОВЕРКА: Буфер должен быть полным!
+      if (!this.isBufferFull) {
+        console.error(
+          "🚨 CRITICAL: Trying to use median filter with unfilled buffer!",
+        );
+        return {
+          x: input.x,
+          y: input.y,
+          wasFiltered: false,
+          confidence: 0.5,
+          filterType: "buffer-not-ready",
+        };
+      }
+
       // Резкие и экстремальные движения фильтруем через медиану
       const medianX = this.getMedianFromBuffer(this.bufferX);
       const medianY = this.getMedianFromBuffer(this.bufferY);
@@ -290,13 +377,12 @@ export class CoPSmartFilter {
       this.frozenCount = 0;
     }
 
-    // ✅ РЕАНИМАЦИЯ ЗАМИРАНИЯ
     if (this.frozenCount >= this.config.frozenThreshold) {
-      const noise = 0.1;
+      const noise = 0.05;
       result.x += (Math.random() - 0.5) * noise;
       result.y += (Math.random() - 0.5) * noise;
       result.wasFiltered = true;
-      result.confidence = Math.min(result.confidence, 0.9);
+      result.confidence = Math.min(result.confidence, 0.8);
       result.filterType = `frozen-reanimation (${this.frozenCount})`;
       this.stats.frozenDetections++;
     }
@@ -313,16 +399,24 @@ export class CoPSmartFilter {
       this.stats.filteredSamples++;
     }
 
-    // Скользящее среднее для confidence
-    const alpha = 0.05; // Медленное обновление
+    const alpha = 0.05;
     this.stats.averageConfidence =
       this.stats.averageConfidence * (1 - alpha) + result.confidence * alpha;
   }
 
   private getMedianFromBuffer(buffer: number[]): number {
+    // ✅ ЗАЩИТА: Используем только заполненную часть буфера
     const effectiveSize = this.isBufferFull
       ? this.config.bufferSize
       : this.head;
+
+    if (effectiveSize === 0) {
+      console.error(
+        "🚨 CRITICAL: getMedianFromBuffer called with empty buffer!",
+      );
+      return 0;
+    }
+
     const values = buffer.slice(0, effectiveSize);
 
     values.sort((a, b) => a - b);
@@ -333,26 +427,25 @@ export class CoPSmartFilter {
       : (values[mid - 1] + values[mid]) / 2;
   }
 
-  // ✅ ПУБЛИЧНЫЕ МЕТОДЫ УПРАВЛЕНИЯ
+  // ✅ ПУБЛИЧНЫЕ МЕТОДЫ
 
   updateConfig(newConfig: Partial<SmartFilterConfig>): void {
     this.config = { ...this.config, ...newConfig };
-    console.log("🎯 CoPSmartFilter config updated:", newConfig);
+    console.log("🎯 CoPSmartFilter v2.3+ config updated:", newConfig);
   }
 
   reset(): void {
+    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Полный сброс состояния
     this.initializeBuffers();
     this.lastX = 0;
     this.lastY = 0;
-    this.lastVelocityX = 0;
-    this.lastVelocityY = 0;
+    this.lastValidX = 0;
+    this.lastValidY = 0;
     this.lastTimestamp = 0;
     this.frozenCount = 0;
     this.stats = this.createInitialStats();
-    console.log("🔄 CoPSmartFilter reset");
+    console.log("🔄 CoPSmartFilter v2.3+ reset (buffer cleared)");
   }
-
-  // ✅ ДИАГНОСТИКА И МОНИТОРИНГ
 
   getStats(): FilterStats {
     return { ...this.stats };
@@ -364,23 +457,27 @@ export class CoPSmartFilter {
 
   getCurrentState(): {
     lastPosition: { x: number; y: number };
+    lastValidPosition: { x: number; y: number };
     frozenCount: number;
     bufferSize: number;
     isBufferFull: boolean;
+    zeroInputsIgnored: number;
   } {
     return {
       lastPosition: { x: this.lastX, y: this.lastY },
+      lastValidPosition: { x: this.lastValidX, y: this.lastValidY },
       frozenCount: this.frozenCount,
       bufferSize: this.config.bufferSize,
       isBufferFull: this.isBufferFull,
+      zeroInputsIgnored: this.stats.zeroInputsIgnored,
     };
   }
 
   getPerformanceStats(): {
-    filterRate: number; // % отфильтрованных пакетов
-    averageConfidence: number; // Средняя уверенность
+    filterRate: number;
+    zeroInputRate: number;
+    averageConfidence: number;
     movementDistribution: {
-      // Распределение типов движений
       gentle: number;
       sharp: number;
       extreme: number;
@@ -390,6 +487,7 @@ export class CoPSmartFilter {
 
     return {
       filterRate: (this.stats.filteredSamples / total) * 100,
+      zeroInputRate: (this.stats.zeroInputsIgnored / total) * 100,
       averageConfidence: this.stats.averageConfidence,
       movementDistribution: {
         gentle: (this.stats.gentleMovements / total) * 100,
@@ -399,38 +497,20 @@ export class CoPSmartFilter {
     };
   }
 
-  // ✅ СПЕЦИАЛЬНЫЕ РЕЖИМЫ
-
-  setModeForGaming(): void {
+  setModeForSharpMovements(): void {
     this.updateConfig({
-      sharpSmoothFactor: 0.4, // Меньше сглаживания для игр
-      gentleSmoothFactor: 0.1, // Почти нет сглаживания плавных движений
+      gentleJumpMm: 50,
+      sharpJumpMm: 200,
+      extremeJumpMm: 300,
+      gentleSmoothFactor: 0.02,
+      sharpSmoothFactor: 0.1,
+      extremeSmoothFactor: 0.4,
+      ignoreZeroInputs: true,
       adaptiveSmoothing: true,
       velocityAware: true,
     });
-    console.log("🎮 Filter optimized for gaming mode");
-  }
-
-  setModeForMedical(): void {
-    this.updateConfig({
-      sharpSmoothFactor: 0.6, // Больше сглаживания для медицины
-      gentleSmoothFactor: 0.2,
-      adaptiveSmoothing: true,
-      velocityAware: false, // Меньше зависимости от скорости
-    });
-    console.log("🏥 Filter optimized for medical mode");
-  }
-
-  setModeForCalibration(): void {
-    this.updateConfig({
-      sharpSmoothFactor: 0.8, // Максимальное сглаживание
-      gentleSmoothFactor: 0.3,
-      enableReanimation: false, // Отключаем реанимацию при калибровке
-      adaptiveSmoothing: false,
-    });
-    console.log("⚖️ Filter optimized for calibration mode");
+    console.log("🎯 CoPSmartFilter v2.3+ optimized for sharp movements");
   }
 }
 
-// ✅ ЭКСПОРТ С ОБРАТНОЙ СОВМЕСТИМОСТЬЮ
 export { CoPSmartFilter as SmartFilter };

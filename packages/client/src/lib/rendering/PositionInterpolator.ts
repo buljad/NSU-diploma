@@ -14,9 +14,10 @@ export class PositionInterpolator {
   private currentPosition: Vector2D = { x: 0, y: 0 };
   private currentVelocity: Vector2D = { x: 0, y: 0 };
   
-  // ✅ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Увеличиваем время экстраполяции
-  private smoothingFactor = 0.5;  // ✅ Было 0.3 → более отзывчивый
-  private maxExtrapolationTime = 150;  // ✅ Было 40ms → в 3.75 раза больше!
+  // ✅ КРИТИЧЕСКИЕ ПАРАМЕТРЫ
+  private smoothingFactor = 0.4; // ✅ СНИЖЕНО с 0.5 для плавности
+  private maxExtrapolationTime = 100; // ✅ СНИЖЕНО со 150 до 100ms
+  private fadeToZeroTime = 500; // ✅ НОВОЕ: через 500ms плавно к центру
 
   addSample(position: Vector2D, timestamp: number): void {
     let velocity: Vector2D = { x: 0, y: 0 };
@@ -31,10 +32,8 @@ export class PositionInterpolator {
           y: (position.y - last.position.y) / dt
         };
         
-        // ✅ ЗАЩИТА ОТ НЕРЕАЛЬНЫХ СКОРОСТЕЙ
-        const maxVel = 800; // мм/с
+        const maxVel = 500; // ✅ СНИЖЕНО с 800
         if (Math.abs(velocity.x) > maxVel || Math.abs(velocity.y) > maxVel) {
-          console.warn('⚠️ Ограничена скорость:', velocity);
           velocity.x = Math.max(-maxVel, Math.min(maxVel, velocity.x));
           velocity.y = Math.max(-maxVel, Math.min(maxVel, velocity.y));
         }
@@ -58,41 +57,50 @@ export class PositionInterpolator {
 
     let target: Vector2D;
 
-    // ✅ ИСПРАВЛЕНИЕ: Экстраполяция работает до 150ms вместо 40ms
     if (timeSince <= this.maxExtrapolationTime) {
+      // ✅ НОРМАЛЬНАЯ ЭКСТРАПОЛЯЦИЯ (первые 100ms)
       const dt = timeSince / 1000;
-      
-      // ✅ УЛУЧШЕННАЯ ЭКСТРАПОЛЯЦИЯ: С затуханием скорости
-      const decay = Math.exp(-dt * 3); // Экспоненциальное затухание
+      const decay = Math.exp(-dt * 4); // ✅ Более быстрое затухание
       
       target = {
         x: latest.position.x + latest.velocity.x * dt * decay,
         y: latest.position.y + latest.velocity.y * dt * decay
       };
-    } else {
-      // ✅ ДАЖЕ ПРИ ДОЛГОЙ ЗАДЕРЖКЕ: Плавно к последней позиции
+    } else if (timeSince <= this.fadeToZeroTime) {
+      // ✅ ПЛАВНОЕ ЗАТУХАНИЕ К ЦЕНТРУ (100-500ms)
+      const fadeProgress = (timeSince - this.maxExtrapolationTime) / 
+                          (this.fadeToZeroTime - this.maxExtrapolationTime);
+      const fadeFactor = 1 - fadeProgress; // 1.0 → 0.0
+      
       target = {
-        x: latest.position.x,
-        y: latest.position.y
+        x: latest.position.x * fadeFactor,
+        y: latest.position.y * fadeFactor
       };
+    } else {
+      // ✅ ДОЛГАЯ ПОТЕРЯ ДАННЫХ (>500ms): К центру
+      target = { x: 0, y: 0 };
     }
 
-    // ✅ АДАПТИВНОЕ СГЛАЖИВАНИЕ: Быстрее реагируем на большие расстояния
+    // ✅ АДАПТИВНОЕ СГЛАЖИВАНИЕ
     const distance = Math.sqrt(
       (target.x - this.currentPosition.x) ** 2 + 
       (target.y - this.currentPosition.y) ** 2
     );
     
-    // Чем дальше цель, тем быстрее движемся (до максимума 0.8)
-    const adaptiveSmoothing = Math.min(0.8, this.smoothingFactor + distance * 0.005);
+    // При больших расстояниях - быстрее, при малых - плавнее
+    const adaptiveSmoothing = distance > 20 
+      ? Math.min(0.7, this.smoothingFactor + distance * 0.01)
+      : this.smoothingFactor;
 
     this.currentPosition = {
       x: this.currentPosition.x + (target.x - this.currentPosition.x) * adaptiveSmoothing,
       y: this.currentPosition.y + (target.y - this.currentPosition.y) * adaptiveSmoothing
     };
 
-    // Обновляем скорость с тем же сглаживанием
-    const targetVel = latest.velocity;
+    const targetVel = timeSince > this.maxExtrapolationTime 
+      ? { x: 0, y: 0 } 
+      : latest.velocity;
+      
     this.currentVelocity = {
       x: this.currentVelocity.x + (targetVel.x - this.currentVelocity.x) * adaptiveSmoothing,
       y: this.currentVelocity.y + (targetVel.y - this.currentVelocity.y) * adaptiveSmoothing
@@ -110,4 +118,4 @@ export class PositionInterpolator {
     this.currentPosition = { x: 0, y: 0 };
     this.currentVelocity = { x: 0, y: 0 };
   }
-}
+} 

@@ -15,22 +15,25 @@ export class KalmanFilter2D {
   private dt: number;
   private initialized: boolean = false;
   
-  // ✅ ЗАЩИТА ОТ ВЫБРОСОВ
   private lastPosition: { x: number; y: number } = { x: 0, y: 0 };
-  private outlierThreshold: number = 80; // мм
-  private maxVelocity: number = 600; // мм/с
+  private outlierThreshold: number = 50; // ✅ СНИЖЕНО с 80 до 50
+  private criticalOutlierThreshold: number = 100; // ✅ НОВОЕ: порог сброса
+  private maxVelocity: number = 500; // ✅ СНИЖЕНО с 600
+  
+  // ✅ НОВОЕ: Счетчик критических выбросов
+  private criticalOutlierCount = 0;
+  private readonly maxCriticalOutliers = 3;
 
   constructor(options: {
     processNoise?: number;
     measurementNoise?: number;
     dt?: number;
   } = {}) {
-    // ✅ УЛУЧШЕННЫЕ ПАРАМЕТРЫ
-    const processNoise = options.processNoise ?? 0.5;  // ✅ Было 0.1
-    const measurementNoise = options.measurementNoise ?? 1.0;  // ✅ Было 2.0
+    const processNoise = options.processNoise ?? 0.3; // ✅ СНИЖЕНО с 0.5
+    const measurementNoise = options.measurementNoise ?? 0.8; // ✅ СНИЖЕНО с 1.0
     this.dt = options.dt ?? 0.02;
 
-    this.state = new Float64Array([0, 0, 0, 0]); // [x, y, vx, vy]
+    this.state = new Float64Array([0, 0, 0, 0]);
 
     this.P = new Float64Array([
       1000, 0, 0, 0,
@@ -86,18 +89,43 @@ export class KalmanFilter2D {
       this.state[3] = 0;
       this.lastPosition = { x: measuredX, y: measuredY };
       this.initialized = true;
+      
+      console.log('Kalman filter initialized');
+      
       return this.getState();
     }
 
-    // ✅ ДЕТЕКЦИЯ ВЫБРОСОВ
     const deltaX = measuredX - this.lastPosition.x;
     const deltaY = measuredY - this.lastPosition.y;
     const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
     
+    // ✅ КРИТИЧЕСКИЙ ВЫБРОС: Автосброс фильтра
+    if (distance > this.criticalOutlierThreshold) {
+      this.criticalOutlierCount++;
+      
+      console.error(`🚨 КРИТИЧЕСКИЙ ВЫБРОС ${distance.toFixed(1)}mm (#${this.criticalOutlierCount})`);
+      
+      if (this.criticalOutlierCount >= this.maxCriticalOutliers) {
+        console.warn('♻️ АВТОСБРОС Kalman фильтра из-за серии выбросов');
+        this.reset();
+        this.state[0] = measuredX;
+        this.state[1] = measuredY;
+        this.lastPosition = { x: measuredX, y: measuredY };
+        this.initialized = true;
+        this.criticalOutlierCount = 0;
+        return this.getState();
+      }
+      
+      // Игнорируем измерение, используем предсказание
+      return this.getState();
+    } else {
+      this.criticalOutlierCount = 0;
+    }
+    
     let trustFactor = 1.0;
     if (distance > this.outlierThreshold) {
       trustFactor = this.outlierThreshold / distance;
-      console.warn(`🚨 Выброс ${distance.toFixed(1)}mm, доверие: ${trustFactor.toFixed(2)}`);
+      console.warn(`Outlier detected: distance=${distance.toFixed(1)}mm, trustFactor=${trustFactor.toFixed(2)}`);
     }
 
     // Predict
@@ -106,27 +134,22 @@ export class KalmanFilter2D {
     this.state[0] = x;
     this.state[1] = y;
 
-    // ✅ АДАПТИВНАЯ КОРРЕКЦИЯ вместо констант
-    // Чем больше доверие к измерению, тем сильнее коррекция
-    const basePosGain = 0.2;
-    const baseVelGain = 0.1;
+    // ✅ УЛУЧШЕННЫЕ коэффициенты коррекции
+    const basePosGain = 0.3; // ✅ УВЕЛИЧЕНО с 0.2
+    const baseVelGain = 0.15; // ✅ УВЕЛИЧЕНО с 0.1
     
-    const posGain = basePosGain + (0.4 * trustFactor);  // 0.2-0.6
-    const velGain = baseVelGain + (0.2 * trustFactor);  // 0.1-0.3
+    const posGain = basePosGain + (0.5 * trustFactor); // 0.3-0.8
+    const velGain = baseVelGain + (0.25 * trustFactor); // 0.15-0.4
     
-    // Коррекция позиции
     this.state[0] += posGain * (measuredX - this.state[0]);
     this.state[1] += posGain * (measuredY - this.state[1]);
     
-    // Коррекция скорости
     this.state[2] += velGain * (measuredX - x) / this.dt;
     this.state[3] += velGain * (measuredY - y) / this.dt;
     
-    // ✅ ОГРАНИЧЕНИЕ СКОРОСТИ
     this.state[2] = Math.max(-this.maxVelocity, Math.min(this.maxVelocity, this.state[2]));
     this.state[3] = Math.max(-this.maxVelocity, Math.min(this.maxVelocity, this.state[3]));
 
-    // Обновляем последнюю позицию
     this.lastPosition.x = this.state[0];
     this.lastPosition.y = this.state[1];
 
@@ -146,5 +169,8 @@ export class KalmanFilter2D {
     this.state.fill(0);
     this.initialized = false;
     this.lastPosition = { x: 0, y: 0 };
+    this.criticalOutlierCount = 0;
+    
+    console.log('Kalman filter manually reset');
   }
 }

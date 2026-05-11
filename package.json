@@ -16,6 +16,7 @@
     "clean": "rm -rf packages/*/node_modules packages/*/.svelte-kit packages/*/dist"
   },
   "devDependencies": {
+    "@types/node": "^20.19.39",
     "prettier": "^3.2.5",
     "prettier-plugin-svelte": "^3.2.2",
     "typescript": "^5.4.2"

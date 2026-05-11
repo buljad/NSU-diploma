@@ -108,7 +108,7 @@ text
 text
 
 Правило: Использовать ТОЛЬКО import type { X } from '@stabilometer/shared'.
-Правило: Если парсер всё равно выдает Unexpected token, необходимо полностью удалить импорт типа из блока <script> файла .svelte.
+Правило: Если парсер всё равно выдает Unexpected token, необходимо полностью удалить импорт типа из блока ```<script>``` файла .svelte.
 ЗАПРЕЩЕНО: Указывать расширения файлов в импортах (никаких .ts или .js в путях).
 
 🚫 Правило 3: Vite Alias для Shared
@@ -336,8 +336,8 @@ CoPCalculator: Вычисление центра давления
 TypeScript
 
 // Формулы CoP:
-const x = (sensorDistanceX / 2) * ((d2 + d3) - (d1 + d4)) / totalForce;
-const y = (sensorDistanceY / 2) * ((d1 + d2) - (d3 + d4)) / totalForce;
+const x = (sensorDistanceX / 2) *((d2 + d3) - (d1 + d4)) / totalForce;
+const y = (sensorDistanceY / 2)* ((d1 + d2) - (d3 + d4)) / totalForce;
 
 ✅ ИСПРАВЛЕНИЯ v2.0:
 
@@ -394,6 +394,7 @@ epsilon: 0.05 // точность "одинаковости" координат 
 
 TypeScript
 
+```
 // Если 10 пакетов подряд дают почти одинаковый CoP:
 if (distance < epsilon && frozenCount >= frozenThreshold) {
 // Добавляем микроскопический шум для "реанимации"
@@ -401,6 +402,7 @@ const noise = 0.1;
 outputX += (Math.random() - 0.5) * noise;
 outputY += (Math.random() - 0.5) * noise;
 }
+```
 
 Алгоритм фильтрации выбросов:
 
@@ -430,7 +432,7 @@ TypeScript
 // Адаптивная коррекция:
 const trustFactor = distance > outlierThreshold ? 0.2 : 0.8;
 const posGain = 0.5; // Базовый гейн
-this.state[0] += trustFactor * posGain * (measuredX - this.state[0]);
+this.state[0] += trustFactor *posGain* (measuredX - this.state[0]);
 
 Этап 4: Интерполяция и Canvas (PositionInterpolator.ts)
 
@@ -454,8 +456,8 @@ target = { x: 0, y: 0 };
 
 TypeScript
 
-const screenX = canvasWidth / 2 + pos.x * scale;
-const screenY = canvasHeight / 2 - pos.y * scale; // МИНУС ОБЯЗАТЕЛЕН (инверсия Y)
+const screenX = canvasWidth / 2 + pos.x *scale;
+const screenY = canvasHeight / 2 - pos.y* scale; // МИНУС ОБЯЗАТЕЛЕН (инверсия Y)
 
 ✅ Этап 5: Масштабирование для Игрового Режима (v2.2)
 

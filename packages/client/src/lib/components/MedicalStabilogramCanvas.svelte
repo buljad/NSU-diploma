@@ -15,6 +15,12 @@
 	let trail: Vector2D[] = [];
 	const maxTrailLength = 200;
 
+	// ✅ НОВОЕ: Диагностические счетчики
+	let frameCount = 0;
+	let lastDiagnosticTime = 0;
+	let lastRenderPosition: Vector2D = { x: 0, y: 0 };
+	let isStoreInitialized = false; // ✅ ИСПРАВЛЕНО: Локальная переменная
+
 	// Медицинские метрики
 	let stabilityScore = 0;
 	let averageSpeed = 0;
@@ -35,18 +41,145 @@
 	$: isConnected = $stabilogramStore.isWsConnected;
 
 	onMount(() => {
+		console.log('🎨 MedicalStabilogramCanvas mounted');
 		ctx = canvas.getContext('2d')!;
+
+		// ✅ ИСПРАВЛЕНО: Принудительная инициализация без проверки приватного свойства
+		console.log('🚀 Force initializing stabilogram store from canvas');
 		stabilogramStore.initialize({ x: width, y: height });
+		isStoreInitialized = true; // ✅ Устанавливаем флаг
+
 		sessionStartTime = performance.now();
 		animate();
 	});
 
 	onDestroy(() => {
-		if (animationId) cancelAnimationFrame(animationId);
+		if (animationId) {
+			cancelAnimationFrame(animationId);
+			console.log('🎨 MedicalStabilogramCanvas destroyed');
+		}
 	});
 
 	function animate() {
+		frameCount++;
+		const now = performance.now();
+
+		// Получаем позицию для рендера
 		const renderPos = stabilogramStore.getRenderPosition();
+
+		// ✅ ДЕТАЛЬНАЯ ДИАГНОСТИКА ВСЕГО ПАЙПЛАЙНА
+		const currentSample = $stabilogramStore.currentSample;
+		if (currentSample) {
+			// Вычисляем дистанции на каждом этапе
+			const rawDistance = Math.sqrt(currentSample.raw.x ** 2 + currentSample.raw.y ** 2);
+			const centeredDistance = Math.sqrt(
+				currentSample.centered.x ** 2 + currentSample.centered.y ** 2
+			);
+			const filteredDistance = Math.sqrt(
+				currentSample.filtered.x ** 2 + currentSample.filtered.y ** 2
+			);
+			const mmDistance = Math.sqrt(currentSample.mm.x ** 2 + currentSample.mm.y ** 2);
+			const renderDistance = Math.sqrt(renderPos.x ** 2 + renderPos.y ** 2);
+
+			// Получаем данные интерполятора
+			const interpolatorDebug = (stabilogramStore as any).getInterpolatorDebug?.() || {};
+			const velocity = $stabilogramStore.velocity;
+			const speed = Math.sqrt(velocity.x ** 2 + velocity.y ** 2);
+
+			// ✅ ДЕТЕКТОР РЕЗКИХ ДВИЖЕНИЙ
+			const maxStageJump = Math.max(
+				Math.abs(rawDistance - centeredDistance),
+				Math.abs(centeredDistance - filteredDistance),
+				Math.abs(filteredDistance - mmDistance),
+				Math.abs(mmDistance - renderDistance)
+			);
+
+			// Логируем только при больших скачках между этапами
+			if (maxStageJump > 15 || speed > 100) {
+				// 15мм разница между этапами или скорость > 100мм/с
+				console.group(
+					`🔥 РЕЗКОЕ ДВИЖЕНИЕ ДЕТЕКТИРОВАНО (jump: ${maxStageJump.toFixed(1)}mm, speed: ${speed.toFixed(1)}mm/s)`
+				);
+
+				console.log('📍 Пайплайн позиций:', {
+					'1_raw': {
+						x: currentSample.raw.x.toFixed(1),
+						y: currentSample.raw.y.toFixed(1),
+						dist: rawDistance.toFixed(1)
+					},
+					'2_centered': {
+						x: currentSample.centered.x.toFixed(1),
+						y: currentSample.centered.y.toFixed(1),
+						dist: centeredDistance.toFixed(1)
+					},
+					'3_filtered': {
+						x: currentSample.filtered.x.toFixed(1),
+						y: currentSample.filtered.y.toFixed(1),
+						dist: filteredDistance.toFixed(1)
+					},
+					'4_mm': {
+						x: currentSample.mm.x.toFixed(1),
+						y: currentSample.mm.y.toFixed(1),
+						dist: mmDistance.toFixed(1)
+					},
+					'5_render': {
+						x: renderPos.x.toFixed(1),
+						y: renderPos.y.toFixed(1),
+						dist: renderDistance.toFixed(1)
+					}
+				});
+
+				console.log('⏱️ Timing:', {
+					deviceTime: currentSample.deviceTime,
+					clientTime: currentSample.clientTime,
+					renderTime: now,
+					age: (now - currentSample.clientTime).toFixed(1) + 'ms',
+					packetRate: $stabilogramStore.packetRate + 'Hz'
+				});
+
+				console.log('🔧 Фильтры:', {
+					interpolator: interpolatorDebug,
+					velocity: { vx: velocity.x.toFixed(1), vy: velocity.y.toFixed(1) },
+					speed: speed.toFixed(1)
+				});
+
+				// Проверяем, есть ли "jump to center" - когда render позиция сильно ближе к центру чем mm позиция
+				const jumpToCenter = mmDistance > 30 && renderDistance < mmDistance * 0.7;
+				if (jumpToCenter) {
+					console.error('🚨 ДЕТЕКТИРОВАН "JUMP TO CENTER"!', {
+						mmPos: `(${currentSample.mm.x.toFixed(1)}, ${currentSample.mm.y.toFixed(1)})`,
+						renderPos: `(${renderPos.x.toFixed(1)}, ${renderPos.y.toFixed(1)})`,
+						ratio: (renderDistance / mmDistance).toFixed(2)
+					});
+				}
+
+				console.groupEnd();
+			}
+		}
+		// ✅ ДИАГНОСТИКА КАЖДЫЕ 2 СЕКУНДЫ
+		if (now - lastDiagnosticTime > 2000) {
+			const moved = Math.sqrt(
+				(renderPos.x - lastRenderPosition.x) ** 2 + (renderPos.y - lastRenderPosition.y) ** 2
+			);
+
+			console.log('🎨 Canvas diagnostic:', {
+				frameCount,
+				fps: Math.round(frameCount / 2),
+				renderPos,
+				moved: moved.toFixed(2),
+				isStoreInitialized,
+				storeState: {
+					isConnected: $stabilogramStore.isWsConnected,
+					isCalibrated: $stabilogramStore.isCalibrated,
+					currentSample: !!$stabilogramStore.currentSample,
+					packetRate: $stabilogramStore.packetRate
+				}
+			});
+
+			frameCount = 0;
+			lastDiagnosticTime = now;
+			lastRenderPosition = { ...renderPos };
+		}
 
 		if (medicalMode) {
 			updateMedicalMetrics(renderPos);
@@ -253,15 +386,21 @@
 				label: 'Время сессии',
 				value: `${((performance.now() - sessionStartTime) / 1000).toFixed(0)} с`,
 				color: '#6b7280'
+			},
+			// ✅ НОВАЯ МЕТРИКА: Пакеты в секунду
+			{
+				label: 'Частота данных',
+				value: `${$stabilogramStore.packetRate} Гц`,
+				color: $stabilogramStore.packetRate > 20 ? '#10b981' : '#f59e0b'
 			}
 		];
 
 		ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-		ctx.fillRect(10, 10, 200, metrics.length * 25 + 20);
+		ctx.fillRect(10, 10, 220, metrics.length * 25 + 20);
 
 		ctx.strokeStyle = '#e5e7eb';
 		ctx.lineWidth = 1;
-		ctx.strokeRect(10, 10, 200, metrics.length * 25 + 20);
+		ctx.strokeRect(10, 10, 220, metrics.length * 25 + 20);
 
 		ctx.font = '13px Arial';
 		metrics.forEach((metric, i) => {
@@ -271,7 +410,7 @@
 
 			ctx.fillStyle = metric.color;
 			ctx.textAlign = 'right';
-			ctx.fillText(metric.value, 200, 30 + i * 25);
+			ctx.fillText(metric.value, 220, 30 + i * 25);
 		});
 	}
 
@@ -311,7 +450,6 @@
 		}
 	}
 
-	// ✅ ИСПРАВЛЕНИЕ: Используем trail вместо positionHistory
 	function drawGameTrail(cx: number, cy: number) {
 		if (trail.length < 2) return;
 
@@ -384,13 +522,18 @@
 
 		const lines = [
 			`Position: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}) mm`,
+			`Velocity: (${velocity.x.toFixed(1)}, ${velocity.y.toFixed(1)}) mm/s`,
 			`Scale: ${scale.toFixed(1)} px/mm`,
+			`Store init: ${isStoreInitialized}`, // ✅ ИСПРАВЛЕНО
+			`Connected: WS=${isConnected} DEV=${$stabilogramStore.isDeviceConnected}`,
+			`Calibrated: ${$stabilogramStore.isCalibrated}`,
+			`Packet rate: ${$stabilogramStore.packetRate} Hz`,
 			`Mode: ${medicalMode ? 'Medical' : 'Game'}`,
 			`Trail: ${trail.length} points`
 		];
 
 		lines.forEach((line, i) => {
-			ctx.fillText(line, 10, height - 60 + i * 15);
+			ctx.fillText(line, 10, height - 140 + i * 15);
 		});
 	}
 
@@ -408,9 +551,9 @@
 		trail = [];
 		lastPosition = null;
 		sessionStartTime = performance.now();
+		console.log('📊 Medical metrics reset');
 	}
 
-	// ✅ ИСПРАВЛЕНИЕ: Убираем двоеточия из имени файла
 	export function exportSessionData() {
 		const data = {
 			positionHistory,
@@ -429,14 +572,13 @@
 
 		const a = document.createElement('a');
 		a.href = url;
-		// ✅ ИСПРАВЛЕНИЕ: Заменяем двоеточия на дефисы для Windows
 		a.download = `stabilogram_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
 		document.body.appendChild(a);
 		a.click();
 		document.body.removeChild(a);
 
 		URL.revokeObjectURL(url);
-		console.log('Данные экспортированы:', data);
+		console.log('💾 Данные экспортированы:', data);
 	}
 </script>
 
@@ -448,6 +590,10 @@
 
 		<button on:click={() => (medicalMode = !medicalMode)} class="control-btn">
 			{medicalMode ? 'Игровой режим' : 'Медицинский режим'}
+		</button>
+
+		<button on:click={() => (showDebug = !showDebug)} class="control-btn">
+			{showDebug ? 'Скрыть отладку' : 'Показать отладку'}
 		</button>
 
 		<button on:click={exportSessionData} class="control-btn"> Экспорт данных </button>

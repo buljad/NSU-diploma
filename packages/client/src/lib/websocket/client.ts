@@ -17,7 +17,6 @@ type StoreType = {
 	setAxisConfig: (c: AxisConfiguration) => void;
 };
 
-// ✅ ИСПРАВЛЕНИЕ: Простая реализация EventEmitter для браузера
 class SimpleEventEmitter {
 	private eventHandlers = new Map<string, ((data: unknown) => void)[]>();
 
@@ -26,8 +25,7 @@ class SimpleEventEmitter {
 			this.eventHandlers.set(event, []);
 		}
 		this.eventHandlers.get(event)!.push(callback);
-		
-		// Возвращаем функцию для отписки
+
 		return () => {
 			const handlers = this.eventHandlers.get(event);
 			if (handlers) {
@@ -57,9 +55,13 @@ export class StabilogramClient extends SimpleEventEmitter {
 	private intentionallyClosed = false;
 	private store: StoreType | null = null;
 
-	// ════════════════════════════════════════════════
-	// Публичные методы для ControlPanel
-	// ════════════════════════════════════════════════
+	private messageStats = {
+		totalMessages: 0,
+		dataMessages: 0,
+		batchMessages: 0,
+		lastMessageTime: 0,
+		messageRate: 0
+	};
 
 	public listPorts(): void {
 		this.send('LIST_PORTS', {});
@@ -77,22 +79,22 @@ export class StabilogramClient extends SimpleEventEmitter {
 		this.send('CALIBRATE_ZERO', {});
 	}
 
-	// ✅ ИСПРАВЛЕНИЕ: Приведение типа для AxisConfiguration
 	public configureAxes(config: AxisConfiguration): void {
 		this.send('CONFIGURE_AXES', config as unknown as Record<string, unknown>);
 	}
 
-	// ════════════════════════════════════════════════
-	// Store integration
-	// ════════════════════════════════════════════════
+	public getPerformanceStats() {
+		const now = performance.now();
+		if (now - this.messageStats.lastMessageTime < 1000) {
+			this.messageStats.messageRate = this.messageStats.totalMessages;
+		}
+		return { ...this.messageStats };
+	}
 
 	setStore(store: any): void {
 		this.store = store;
+		console.log('🔗 WebSocket client connected to store');
 	}
-
-	// ════════════════════════════════════════════════
-	// Connection management
-	// ════════════════════════════════════════════════
 
 	async connect(): Promise<void> {
 		this.intentionallyClosed = false;
@@ -118,7 +120,7 @@ export class StabilogramClient extends SimpleEventEmitter {
 					console.log('❌ WebSocket closed:', event.code, event.reason);
 					this.store?.setWsConnected(false);
 					this.store?.setDeviceConnected(false);
-					
+
 					if (!this.intentionallyClosed) {
 						this.scheduleReconnect();
 					}
@@ -137,19 +139,15 @@ export class StabilogramClient extends SimpleEventEmitter {
 	disconnect(): void {
 		console.log('🔌 Disconnecting WebSocket...');
 		this.intentionallyClosed = true;
-		
+
 		if (this.ws) {
 			this.ws.close(1000, 'Client disconnect');
 			this.ws = null;
 		}
-		
+
 		this.store?.setWsConnected(false);
 		this.store?.setDeviceConnected(false);
 	}
-
-	// ════════════════════════════════════════════════
-	// Private methods
-	// ════════════════════════════════════════════════
 
 	private scheduleReconnect(): void {
 		if (this.reconnectAttempts >= this.maxReconnectAttempts) {
@@ -159,9 +157,9 @@ export class StabilogramClient extends SimpleEventEmitter {
 
 		this.reconnectAttempts++;
 		const delay = Math.min(this.reconnectInterval * this.reconnectAttempts, 30000);
-		
+
 		console.log(`🔄 Reconnect attempt ${this.reconnectAttempts} in ${delay}ms...`);
-		
+
 		setTimeout(() => {
 			if (!this.intentionallyClosed) {
 				this.connect().catch(console.error);
@@ -172,41 +170,82 @@ export class StabilogramClient extends SimpleEventEmitter {
 	private handleMessage(data: string): void {
 		try {
 			const msg = JSON.parse(data);
-			if (!msg.type) {
-				console.warn('⚠️ Message without type:', msg);
-				return;
-			}
+			if (!msg.type) return;
+
+			this.messageStats.totalMessages++;
+			this.messageStats.lastMessageTime = performance.now();
 
 			switch (msg.type) {
 				case 'DATA':
+					this.messageStats.dataMessages++;
 					if (msg.data) {
-						const sample = { 
-							...msg.data, 
-							clientTime: performance.now() 
+						const sample = {
+							...msg.data,
+							clientTime: performance.now()
 						} as StabilogramSample;
 						this.store?.processSample(sample);
 					}
 					break;
 
+				// ✅ ИСПРАВЛЕНО: Идеальное распределение времени для пачки
+				case 'DATA_BATCH':
+					this.messageStats.batchMessages++;
+
+					if (msg.data && Array.isArray(msg.data)) {
+						const batchReceiveTime = performance.now();
+						const count = msg.data.length;
+
+						// ✅ ИСПРАВЛЕНО: Используем РЕАЛЬНОЕ время из последнего пакета
+						// Предполагаем, что batch был отправлен сразу после последнего пакета
+						const lastSampleData = msg.data[count - 1];
+
+						// Если в пакете есть deviceTime, используем его для вычисления offset'а
+						let baseClientTime = batchReceiveTime;
+
+						for (let i = 0; i < count; i++) {
+							const sampleData = msg.data[i];
+
+							// ✅ НОВАЯ СТРАТЕГИЯ: Равномерно распределяем пакеты
+							// в интервале [batchReceiveTime - estimatedBatchDuration, batchReceiveTime]
+							const estimatedPacketInterval = 20; // 50Hz = 20ms между пакетами
+							const estimatedBatchDuration = (count - 1) * estimatedPacketInterval;
+
+							// Пакеты идут "назад во времени" от момента получения batch'а
+							const packetOffset = (count - 1 - i) * estimatedPacketInterval;
+							const clientTime = batchReceiveTime - packetOffset;
+
+							const sample = {
+								...sampleData,
+								clientTime: clientTime
+							} as StabilogramSample;
+
+							this.store?.processSample(sample);
+						}
+
+						// ✅ ДИАГНОСТИКА
+						if (count > 1) {
+							console.log(
+								`📦 Batch processed: ${count} packets over ~${((count - 1) * 20).toFixed(0)}ms`
+							);
+						}
+					}
+					break;
+
 				case 'PORTS_LIST':
-					console.log('📋 Ports list received:', msg.ports?.length || 0, 'ports');
 					this.emit('PORTS_LIST', { ports: msg.ports || [] });
 					break;
 
 				case 'SERIAL_CONNECTED':
-					console.log('✅ Device connected:', msg.port || 'Test Mode');
 					this.store?.setDeviceConnected(true);
 					this.emit('SERIAL_CONNECTED', msg);
 					break;
 
 				case 'SERIAL_DISCONNECTED':
-					console.log('❌ Device disconnected');
 					this.store?.setDeviceConnected(false);
 					this.emit('SERIAL_DISCONNECTED', null);
 					break;
 
 				case 'CONNECTED':
-					console.log('🔗 Connection status:', msg);
 					this.store?.setDeviceConnected(!!msg.serialConnected);
 					if (msg.calibrated && msg.calibration) {
 						this.store?.setCalibration(msg.calibration);
@@ -218,12 +257,10 @@ export class StabilogramClient extends SimpleEventEmitter {
 					break;
 
 				case 'CALIBRATION_STARTED':
-					console.log('🔧 Calibration started');
 					this.emit('CALIBRATION_STARTED', null);
 					break;
 
 				case 'CALIBRATION_PROGRESS':
-					console.log('📊 Calibration progress:', msg.progress, '/', msg.total);
 					this.emit('CALIBRATION_PROGRESS', {
 						progress: msg.progress || 0,
 						total: msg.total || 200
@@ -231,7 +268,6 @@ export class StabilogramClient extends SimpleEventEmitter {
 					break;
 
 				case 'CALIBRATION_COMPLETE':
-					console.log('✅ Calibration completed');
 					if (msg.calibration) {
 						this.store?.setCalibration(msg.calibration);
 					}
@@ -239,42 +275,30 @@ export class StabilogramClient extends SimpleEventEmitter {
 					break;
 
 				case 'ERROR':
-					console.error('❌ Server error:', msg.error);
 					this.emit('ERROR', { error: msg.error });
 					break;
 
-				default:
-					console.log('❓ Unknown message type:', msg.type, msg);
+				case 'PERFORMANCE_STATS':
+					this.emit('PERFORMANCE_STATS', msg.stats);
+					break;
+
+				case 'PERFORMANCE_UPDATED':
+					this.emit('PERFORMANCE_UPDATED', msg.settings);
 					break;
 			}
 		} catch (error) {
-			console.error('❌ Message parse error:', error, 'Raw data:', data);
+			console.error('❌ Message parse error:', error);
 		}
 	}
 
-	// ✅ ИСПРАВЛЕНИЕ: Изменили тип payload для большей гибкости
 	private send(type: string, payload: any = {}): void {
-		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-			console.warn('⚠️ WebSocket not connected, cannot send:', type);
-			return;
-		}
-
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 		try {
-			const message = JSON.stringify({
-				type,
-				...payload
-			});
-
-			this.ws.send(message);
-			console.log(`📤 Sent: ${type}`, payload);
+			this.ws.send(JSON.stringify({ type, ...payload }));
 		} catch (error) {
 			console.error('❌ Send error:', error);
 		}
 	}
-
-	// ════════════════════════════════════════════════
-	// Utility methods
-	// ════════════════════════════════════════════════
 
 	getConnectionState(): boolean {
 		return this.ws?.readyState === WebSocket.OPEN;
@@ -293,5 +317,8 @@ export class StabilogramClient extends SimpleEventEmitter {
 	}
 }
 
-// ✅ Singleton instance
 export const wsClient = new StabilogramClient();
+
+if (typeof window !== 'undefined') {
+	(window as any).wsClient = wsClient;
+}

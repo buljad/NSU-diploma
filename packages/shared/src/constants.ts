@@ -61,3 +61,26 @@ export const RENDER_DEFAULTS = {
  * Если показания слишком маленькие - уменьшить
  */
 export const MM_PER_UNIT = 0.01;
+
+/** ✅ НОВЫЕ НАСТРОЙКИ ПРОИЗВОДИТЕЛЬНОСТИ v2.3 */
+export const PERFORMANCE_DEFAULTS = {
+  // Парсер
+  enableFastParsing: true,           // Быстрые алгоритмы парсинга
+  enablePacketRecovery: true,        // Восстановление поврежденных пакетов
+  enableValueCaching: true,          // Кэширование декодированных значений
+  maxRecoveryAttempts: 2,            // Максимум попыток восстановления
+
+  // Серверные буферы
+  enableOptimizedBuffers: true,      // Увеличенные буферы SerialPort
+  serialBufferSize: 1024 * 8,        // 8KB буфер SerialPort
+  maxListeners: 50,                  // Больше слушателей событий
+
+  // Batch-отправка
+  enableBatchSending: false,         // Группировка пакетов (экспериментально)
+  batchSize: 5,                      // Размер группы пакетов
+  batchTimeoutMs: 10,                // Максимальное время накопления
+
+  // Мониторинг
+  logSlowOperations: true,           // Логирование медленных операций
+  slowOperationThresholdMs: 5,       // Порог "медленной" операции
+} as const;

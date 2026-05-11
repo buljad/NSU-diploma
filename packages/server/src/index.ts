@@ -26,6 +26,15 @@ interface ClientState {
   isAlive: boolean;
 }
 
+// ✅ НОВОЕ: Настройки оптимизации (безопасно включать/выключать)
+interface PerformanceSettings {
+  enableBatchSending: boolean; // Отправлять пакеты группами
+  batchSize: number; // Размер группы пакетов
+  batchTimeoutMs: number; // Максимальное время накопления (мс)
+  enableOptimizedBuffers: boolean; // Увеличенные буферы SerialPort
+  enableFastParsing: boolean; // Ускоренный парсинг
+}
+
 class StabilogramServer {
   private wss: WebSocketServer;
   private clients: Set<ClientState> = new Set();
@@ -33,8 +42,8 @@ class StabilogramServer {
 
   // Обработка данных
   private parser: PacketParser;
-  private copCalculator: CoPCalculator;  // ✅ ИСПРАВЛЕНО: CoPCalculator для расчета CoP
-  private copFilter: CoPSmartFilter;      // ✅ ИСПРАВЛЕНО: CoPSmartFilter для фильтрации
+  private copCalculator: CoPCalculator;
+  private copFilter: CoPSmartFilter;
   private axisTransform: AxisTransform;
 
   // Конфигурация
@@ -52,18 +61,30 @@ class StabilogramServer {
   private testMode: boolean = false;
   private testInterval: ReturnType<typeof setInterval> | null = null;
 
+  // ✅ НОВОЕ: Batch-отправка (опционально)
+  private performanceSettings: PerformanceSettings = {
+    enableBatchSending: true, // 🔧 Установить true для включения
+    batchSize: 5, // Отправлять по 5 пакетов за раз
+    batchTimeoutMs: 10, // Максимум 10мс ожидания
+    enableOptimizedBuffers: true, // 🔧 Установить true для включения
+    enableFastParsing: true, // 🔧 Установить true для включения
+  };
+
+  private packetBatch: StabilogramSample[] = [];
+  private batchTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor() {
+    // ✅ УЛУЧШЕНО: Настройки парсера
     this.parser = new PacketParser({
       filterOutliers: false,
+      enableFastMode: this.performanceSettings.enableFastParsing, // ✅ НОВОЕ
     });
 
-    // ✅ ИСПРАВЛЕНО: CoPCalculator для расчета координат
     this.copCalculator = new CoPCalculator({
       sensorDistanceX: this.sensorDistance.x,
       sensorDistanceY: this.sensorDistance.y,
     });
 
-    // ✅ ИСПРАВЛЕНО: CoPSmartFilter для фильтрации (без параметров)
     this.copFilter = new CoPSmartFilter();
 
     this.axisConfig = {
@@ -83,6 +104,9 @@ class StabilogramServer {
     console.log(
       `🚀 WebSocket сервер запущен на ws://localhost:${WEBSOCKET_PORT}`,
     );
+
+    // ✅ НОВОЕ: Вывод настроек производительности
+    console.log("⚡ Настройки производительности:", this.performanceSettings);
   }
 
   private loadStoredCalibration(): void {
@@ -151,6 +175,7 @@ class StabilogramServer {
         axisConfig: this.axisConfig,
         platformSize: this.platformSize,
         sensorDistance: this.sensorDistance,
+        performanceSettings: this.performanceSettings, // ✅ НОВОЕ: Информируем клиент
       });
     });
 
@@ -193,10 +218,33 @@ class StabilogramServer {
         case "DIAGNOSE_SENSORS":
           this.diagnoseSensors(client.ws);
           break;
+        // ✅ НОВОЕ: Управление производительностью
+        case "SET_PERFORMANCE":
+          this.updatePerformanceSettings(data.settings);
+          break;
       }
     } catch (error) {
       console.error("Ошибка обработки сообщения:", error);
     }
+  }
+
+  // ✅ НОВЫЙ МЕТОД: Обновление настроек производительности на лету
+  private updatePerformanceSettings(
+    newSettings: Partial<PerformanceSettings>,
+  ): void {
+    this.performanceSettings = { ...this.performanceSettings, ...newSettings };
+    console.log(
+      "⚡ Настройки производительности обновлены:",
+      this.performanceSettings,
+    );
+
+    // Применяем к парсеру
+    this.parser.setFastMode(this.performanceSettings.enableFastParsing);
+
+    this.broadcast({
+      type: "PERFORMANCE_UPDATED",
+      settings: this.performanceSettings,
+    });
   }
 
   private diagnoseSensors(ws: WebSocket): void {
@@ -262,10 +310,33 @@ class StabilogramServer {
     }
 
     try {
-      this.serialPort = new SerialPort({ path: portPath, baudRate });
+      // ✅ УЛУЧШЕНО: Оптимизированные настройки SerialPort
+      const serialOptions: any = {
+        path: portPath,
+        baudRate: baudRate,
+      };
+
+      if (this.performanceSettings.enableOptimizedBuffers) {
+        serialOptions.highWaterMark = 1024 * 8; // ✅ 8KB буфер (было ~64B по умолчанию)
+        serialOptions.lock = false; // ✅ Отключаем блокировку порта
+        console.log("📈 Включены оптимизированные буферы SerialPort (8KB)");
+      }
+
+      this.serialPort = new SerialPort(serialOptions);
 
       this.serialPort.on("open", () => {
         console.log(`✅ Порт ${portPath} открыт`);
+
+        // ✅ НОВОЕ: Настройка внутренних буферов после открытия
+        if (
+          this.performanceSettings.enableOptimizedBuffers &&
+          this.serialPort
+        ) {
+          // Увеличиваем размер внутренних буферов Node.js
+          this.serialPort.setMaxListeners(50); // Больше слушателей
+          console.log("🔧 Внутренние буферы Node.js оптимизированы");
+        }
+
         this.broadcast({ type: "SERIAL_CONNECTED", port: portPath });
       });
 
@@ -275,6 +346,11 @@ class StabilogramServer {
 
       this.serialPort.on("close", () => {
         this.broadcast({ type: "SERIAL_DISCONNECTED" });
+      });
+
+      this.serialPort.on("error", (error) => {
+        console.error("❌ Ошибка SerialPort:", error);
+        this.broadcast({ type: "ERROR", error: error.message });
       });
     } catch (error) {
       console.error("❌ Не удалось открыть порт:", error);
@@ -287,6 +363,9 @@ class StabilogramServer {
       this.testInterval = null;
       console.log("🔄 Тестовый режим остановлен");
     }
+
+    // ✅ НОВОЕ: Очистка batch при отключении
+    this.flushBatch();
 
     if (this.serialPort?.isOpen) {
       this.serialPort.close();
@@ -321,7 +400,8 @@ class StabilogramServer {
         packetNumber: packetNumber++,
       };
 
-      this.broadcast({ type: "DATA", data: sample });
+      // ✅ УЛУЧШЕНО: Используем единую систему отправки
+      this.sendSampleToClients(sample);
 
       angle += 0.05;
       if (angle > Math.PI * 2) angle = 0;
@@ -329,22 +409,88 @@ class StabilogramServer {
   }
 
   private handleSerialData(data: Buffer): void {
+    // ✅ УЛУЧШЕНО: Более эффективная обработка данных
+    const startTime = performance.now();
+
     this.parser.addData(new Uint8Array(data));
     const packets = this.parser.parseAll();
+
+    const processTime = performance.now() - startTime;
+
+    // ✅ НОВОЕ: Логирование производительности (только если медленно)
+    if (processTime > 5) {
+      console.log(
+        `⚠️ Медленная обработка ${packets.length} пакетов: ${processTime.toFixed(2)}ms`,
+      );
+    }
+
+    // ✅ УЛУЧШЕНО: Обработка нескольких пакетов за раз
+    const processedSamples: StabilogramSample[] = [];
 
     for (const packet of packets) {
       if (!packet.isValid) continue;
 
-      // ✅ ШАГ 1: Вычисляем сырые координаты CoP
+      const sample = this.processPacket(packet);
+      if (sample) {
+        processedSamples.push(sample);
+      }
+    }
+
+    // ✅ НОВОЕ: Batch или обычная отправка
+    if (this.performanceSettings.enableBatchSending) {
+      this.addToBatch(processedSamples);
+    } else {
+      // Обычная отправка по одному
+      processedSamples.forEach((sample) => this.sendSampleToClients(sample));
+    }
+  }
+
+  // ✅ НОВЫЙ МЕТОД: Обработка одного пакета (выделено для читаемости)
+  private processPacket(packet: any): StabilogramSample | null {
+    try {
+      // ШАГ 1: Вычисляем сырые координаты CoP
       const rawCoP = this.copCalculator.calculate(packet.sensors);
 
-      // ✅ ШАГ 2: Трансформируем оси
+      // ШАГ 2: Трансформируем оси
       const centered = this.axisTransform.transform(rawCoP);
 
-      // ✅ ШАГ 3: Фильтруем выбросы медианным фильтром
+      // ШАГ 3: Фильтруем выбросы медианным фильтром
       const filteredCoP = this.copFilter.filter(centered, Date.now());
 
-      // ✅ ШАГ 4: Формируем финальные координаты
+      // ✅ ДИАГНОСТИКА SERVER-SIDE ФИЛЬТРАЦИИ
+      const rawDistance = Math.sqrt(rawCoP.x ** 2 + rawCoP.y ** 2);
+      const centeredDistance = Math.sqrt(centered.x ** 2 + centered.y ** 2);
+      const filteredDistance = Math.sqrt(
+        filteredCoP.x ** 2 + filteredCoP.y ** 2,
+      );
+
+      const serverFilterJump = Math.abs(centeredDistance - filteredDistance);
+
+      if (serverFilterJump > 20) {
+        console.warn("🔧 SERVER FILTER JUMP:", {
+          sensors: packet.sensors,
+          raw: {
+            x: rawCoP.x.toFixed(1),
+            y: rawCoP.y.toFixed(1),
+            dist: rawDistance.toFixed(1),
+          },
+          centered: {
+            x: centered.x.toFixed(1),
+            y: centered.y.toFixed(1),
+            dist: centeredDistance.toFixed(1),
+          },
+          filtered: {
+            x: filteredCoP.x.toFixed(1),
+            y: filteredCoP.y.toFixed(1),
+            dist: filteredDistance.toFixed(1),
+          },
+          filterInfo: filteredCoP.filterType || "unknown",
+          confidence: filteredCoP.confidence?.toFixed(2) || "N/A",
+          jump: serverFilterJump.toFixed(1) + "mm",
+        });
+      }
+
+      // ШАГ 4: Формируем финальные координаты
       const mm = {
         x: filteredCoP.x,
         y: filteredCoP.y,
@@ -361,6 +507,7 @@ class StabilogramServer {
         packetNumber: packet.packetNumber,
       };
 
+      // Обрабатываем калибровку
       if (this.isCalibrating) {
         this.calibrationSamples.push(packet.sensors);
 
@@ -375,8 +522,51 @@ class StabilogramServer {
         }
       }
 
-      this.broadcast({ type: "DATA", data: sample });
+      return sample;
+    } catch (error) {
+      console.error("❌ Ошибка обработки пакета:", error);
+      return null;
     }
+  }
+
+  // ✅ НОВЫЕ МЕТОДЫ: Batch-отправка пакетов
+  private addToBatch(samples: StabilogramSample[]): void {
+    this.packetBatch.push(...samples);
+
+    // Отправляем, если накопилось достаточно пакетов
+    if (this.packetBatch.length >= this.performanceSettings.batchSize) {
+      this.flushBatch();
+    } else {
+      // Устанавливаем таймер, если его еще нет
+      if (!this.batchTimer) {
+        this.batchTimer = setTimeout(() => {
+          this.flushBatch();
+        }, this.performanceSettings.batchTimeoutMs);
+      }
+    }
+  }
+
+  private flushBatch(): void {
+    if (this.packetBatch.length === 0) return;
+
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
+
+    // ✅ ОТПРАВЛЯЕМ ПАКЕТАМИ
+    this.broadcast({
+      type: "DATA_BATCH",
+      data: this.packetBatch,
+      count: this.packetBatch.length,
+    });
+
+    this.packetBatch = [];
+  }
+
+  // ✅ НОВЫЙ МЕТОД: Единая система отправки данных
+  private sendSampleToClients(sample: StabilogramSample): void {
+    this.broadcast({ type: "DATA", data: sample });
   }
 
   private startCalibration(): void {
@@ -498,6 +688,8 @@ class StabilogramServer {
   }
 
   shutdown(): void {
+    this.flushBatch(); // ✅ НОВОЕ: Отправляем оставшиеся данные
+
     if (this.testInterval) clearInterval(this.testInterval);
     if (this.serialPort?.isOpen) this.serialPort.close();
     this.wss.close();

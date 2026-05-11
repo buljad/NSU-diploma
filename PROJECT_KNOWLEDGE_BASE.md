@@ -1,36 +1,41 @@
-🧠 AI SYSTEM PROMPT & MASTER KNOWLEDGE BASE: STABILOMETER v2.2
+# 🧠 AI SYSTEM PROMPT & MASTER KNOWLEDGE BASE: STABILOMETER v2.3
 
 [CRITICAL INSTRUCTION FOR ALL LLMs]
 
 You are an expert Senior Fullstack & Real-Time Systems Developer. This document is your Absolute Single Source of Truth (SSoT) for the "Stabilometer" project. You MUST read, understand, and strictly follow every rule, architecture pattern, and anti-pattern described here before generating any code or analyzing any bug.
 
-1. ДОМЕННАЯ ОБЛАСТЬ И ФИЗИКА СИСТЕМЫ
+    ДОМЕННАЯ ОБЛАСТЬ И ФИЗИКА СИСТЕМЫ
 
 Проект — аппаратно-программный комплекс класса "Soft Real-Time" для медицинской диагностики и реабилитации (оценка баланса человека).
 
-    Оборудование: Платформа с 4 тензодатчиками (d1, d2, d3, d4).
-    Топология: [Hardware (COM-port, 50-100Hz)] ===> [Node.js Server] ===(WebSocket)===> [SvelteKit SPA Client (60-144Hz)].
-    Метрики: X, Y (координаты Центра Давления - CoP), Z (резерв, 0), F (общая сила/вес пациента).
-    Главный инженерный вызов: Разрыв частот. Оборудование шлет пакеты каждые 10-20 мс (с физическим шумом и дрейфом датчиков). Браузер клиента (Canvas) отрисовывает кадры каждые 6.9 - 16.6 мс. Задача ПО — обеспечить строгую математическую фильтрацию шума и идеально плавную визуализацию (экстраполяцию) без разрывов и "телепортаций" маркера на экране.
+text
 
-Схема расположения датчиков:
+Оборудование: Платформа с 4 тензодатчиками (d1, d2, d3, d4).
+Топология: [Hardware (COM-port, 50-100Hz)] ===> [Node.js Server] ===(WebSocket)===> [SvelteKit SPA Client (60-144Hz)].
+Метрики: X, Y (координаты Центра Давления - CoP), Z (резерв, 0), F (общая сила/вес пациента).
+Главный инженерный вызов: Разрыв частот. Оборудование шлет пакеты каждые 10-20 мс (с физическим шумом и дрейфом датчиков). Браузер клиента (Canvas) отрисовывает кадры каждые 6.9 - 16.6 мс. Задача ПО — обеспечить строгую математическую фильтрацию шума и идеально плавную визуализацию (экстраполяцию) без разрывов и "телепортаций" маркера на экране.
+
+✅ КРИТИЧЕСКАЯ НАХОДКА v2.3: Аппаратные проблемы датчиков
+
+Обнаружено: Датчики работают в разных диапазонах значений:
 
 text
 
-       Y+ (вперёд)
-         ↑
-    ┌────┴────┐
-    │ D1   D2 │
-    │    ●    │  ← Центр платформы (0, 0)
-    │ D4   D3 │
-    └────┬────┘
-         ↓
-       Y- (назад)
+D1, D2: базовый уровень ~300-400 единиц
+D3, D4: базовый уровень ~40,000-60,000 единиц (в 100+ раз больше!)
 
-   X- ←───────→ X+
- (лево)      (право)
+Следствия:
 
-1. АРХИТЕКТУРА MONOREPO И СБОРКА
+text
+
+Огромные скачки при движении (до 130× от базового значения)
+Отрицательные значения после калибровки
+CoP достигает максимальных ограничений (±130mm clamp)
+Рывки и замирания точки на экране
+
+Подход к решению: Софтверная компенсация через медианную фильтрацию и детекцию аномалий вместо попыток нормализации разнородных датчиков.
+
+    АРХИТЕКТУРА MONOREPO И СБОРКА
 
 Проект использует pnpm workspaces. Пересечение зон ответственности между пакетами СТРОГО ЗАПРЕЩЕНО.
 
@@ -39,67 +44,72 @@ text
 stabilometer/
 ├── pnpm-workspace.yaml
 ├── packages/
-│   ├── shared/              # [ISOMORPHIC] Только чистый TS. Никаких DOM/Node API.
-│   │   └── src/
-│   │       ├── types.ts     # Контракты (StabilogramSample, AxisConfig)
-│   │       ├── constants.ts # PACKET_LENGTH, WEBSOCKET_PORT, SENSOR_DISTANCE
-│   │       ├── RingBuffer.ts
-│   │       ├── PacketParser.ts
-│   │       ├── AxisTransform.ts
-│   │       └── CoPCalculator.ts
-│   │
-│   ├── server/              # [NODE.JS] Backend.
-│   │   └── src/
-│   │       ├── index.ts     # serialport, WebSocket Server, Калибровка
-│   │       └── CalibrationStorage.ts
-│   │
-│   └── client/              # [BROWSER] SvelteKit SPA.
-│       ├── svelte.config.js
-│       ├── vite.config.ts
-│       └── src/
-│           ├── routes/
-│           │   ├── +page.ts          # export const ssr = false; (КРИТИЧНО)
-│           │   └── +page.svelte      # Главный UI контроллер (DI точка сборки)
-│           └── lib/
-│               ├── components/
-│               │   ├── ControlPanel.svelte           # Универсальная панель управления (380px)
-│               │   ├── MedicalStabilogramCanvas.svelte  # Медицинский режим
-│               │   └── BallCatcherCanvas.svelte      # ✅ v2.2: Игровой режим
-│               ├── game/                             # ✅ v2.2: Игровая логика
-│               │   ├── BallCatcherGame.ts
-│               │   ├── BallPool.ts
-│               │   ├── BasketController.ts
-│               │   ├── CollisionDetector.ts
-│               │   ├── ScoreManager.ts
-│               │   ├── StageManager.ts
-│               │   ├── types.ts
-│               │   └── constants.ts
-│               ├── filters/
-│               │   └── KalmanFilter.ts
-│               ├── rendering/
-│               │   └── PositionInterpolator.ts
-│               ├── stores/
-│               │   ├── stabilogram.ts    # Данные стабилометра
-│               │   └── gameState.ts      # ✅ v2.2: Состояние игры
-│               └── websocket/
-│                   └── client.ts         # ✅ v2.2: Публичное API + SimpleEventEmitter
+│ ├── shared/ # [ISOMORPHIC] Только чистый TS. Никаких DOM/Node API.
+│ │ └── src/
+│ │ ├── types.ts # Контракты (StabilogramSample, AxisConfig)
+│ │ ├── constants.ts # PACKET_LENGTH, WEBSOCKET_PORT, SENSOR_DISTANCE
+│ │ ├── RingBuffer.ts
+│ │ ├── PacketParser.ts
+│ │ ├── AxisTransform.ts
+│ │ ├── CoPCalculator.ts
+│ │ └── CoPSmartFilter.ts # ✅ v2.3: Медианный фильтр CoP
+│ │
+│ ├── server/ # [NODE.JS] Backend.
+│ │ └── src/
+│ │ ├── index.ts # serialport, WebSocket Server, Калибровка
+│ │ └── CalibrationStorage.ts
+│ │
+│ └── client/ # [BROWSER] SvelteKit SPA.
+│ ├── svelte.config.js
+│ ├── vite.config.ts
+│ └── src/
+│ ├── routes/
+│ │ ├── +page.ts # export const ssr = false; (КРИТИЧНО)
+│ │ └── +page.svelte # Главный UI контроллер (DI точка сборки)
+│ └── lib/
+│ ├── components/
+│ │ ├── ControlPanel.svelte # Универсальная панель управления (380px)
+│ │ ├── MedicalStabilogramCanvas.svelte # ✅ v2.3: Диагностические режимы
+│ │ └── BallCatcherCanvas.svelte # Игровой режим
+│ ├── game/ # Игровая логика
+│ │ ├── BallCatcherGame.ts
+│ │ ├── BallPool.ts
+│ │ ├── BasketController.ts
+│ │ ├── CollisionDetector.ts
+│ │ ├── ScoreManager.ts
+│ │ ├── StageManager.ts
+│ │ ├── types.ts
+│ │ └── constants.ts
+│ ├── filters/
+│ │ └── KalmanFilter.ts
+│ ├── rendering/
+│ │ └── PositionInterpolator.ts # ✅ v2.3: Zero-GC кольцевой буфер
+│ ├── stores/
+│ │ ├── stabilogram.ts # ✅ v2.3: Оптимизированный стор
+│ │ └── gameState.ts # Состояние игры
+│ └── websocket/
+│ └── client.ts # Публичное API + SimpleEventEmitter
 
-1. СТРОГИЕ АНТИ-ПАТТЕРНЫ И ПРАВИЛА (CRITICAL RULES)
+    СТРОГИЕ АНТИ-ПАТТЕРНЫ И ПРАВИЛА (CRITICAL RULES)
 
 ЛЮБОЕ НАРУШЕНИЕ ЭТИХ ПРАВИЛ ПРИВЕДЕТ К КРАШУ СИСТЕМЫ.
 🚫 Правило 1: SSR Полностью отключен (Strict SPA)
 
 В файле client/src/routes/+page.ts жестко задано export const ssr = false;.
 
-    ЗАПРЕЩЕНО: Использовать серверные хуки SvelteKit (+page.server.ts), Load-функции с Node.js кодом, или пытаться обращаться к файловой системе в пакете client.
+text
+
+ЗАПРЕЩЕНО: Использовать серверные хуки SvelteKit (+page.server.ts), Load-функции с Node.js кодом, или пытаться обращаться к файловой системе в пакете client.
 
 🚫 Правило 2: Импорт типов в Svelte-компонентах
 
 Парсер vite-plugin-svelte падает при конструкции import { type X } внутри .svelte файлов из-за workspace symlinks.
 
-    Правило: Использовать ТОЛЬКО import type { X } from '@stabilometer/shared'.
-    Правило: Если парсер всё равно выдает Unexpected token, необходимо полностью удалить импорт типа из блока <script> файла .svelte.
-    ЗАПРЕЩЕНО: Указывать расширения файлов в импортах (никаких .ts или .js в путях).
+text
+
+Правило: Использовать ТОЛЬКО import type { X } from '@stabilometer/shared'.
+Правило: Если парсер всё равно выдает Unexpected token, необходимо полностью удалить импорт типа из блока <script> файла .svelte.
+ЗАПРЕЩЕНО: Указывать расширения файлов в импортах (никаких .ts или .js в путях).
 
 🚫 Правило 3: Vite Alias для Shared
 
@@ -110,63 +120,152 @@ stabilometer/
 TypeScript
 
 resolve: {
-  alias: {
-    '@stabilometer/shared': path.resolve(__dirname, '../shared/src')
-  }
+alias: {
+'@stabilometer/shared': path.resolve(__dirname, '../shared/src')
+}
 }
 
 🚫 Правило 4: Синхронный onMount
 
 Svelte строго проверяет возвращаемый тип функции onMount (ожидается void или () => void для cleanup).
 
-    ЗАПРЕЩЕНО: onMount(async () => { await ws.connect(); }).
-    ПРАВИЛЬНО: onMount(() => { ws.connect().catch(console.error); });
+text
+
+ЗАПРЕЩЕНО: onMount(async () => { await ws.connect(); }).
+ПРАВИЛЬНО: onMount(() => { ws.connect().catch(console.error); });
 
 🚫 Правило 5: Dependency Injection (Разорванный цикл импортов)
 
 Стор (stabilogram.ts) и WS Клиент (client.ts) логически зависят друг от друга, но ЗАПРЕЩЕНО импортировать их друг в друга статически в шапке файлов.
 
-    Решение: В client.ts реализован метод setStore(store: any). Связывание происходит в +page.svelte при старте приложения: wsClient.setStore(stabilogramStore);.
+text
+
+Решение: В client.ts реализован метод setStore(store: any). Связывание происходит в +page.svelte при старте приложения: wsClient.setStore(stabilogramStore);.
 
 🚫 Правило 6: Spread оператор для unknown в WebSocket
 
 При отправке JSON через wsClient.send(type, payload), параметр payload должен быть типизирован как any или Record<string, unknown>.
 
-    ЗАПРЕЩЕНО: Использовать тип unknown в связке со spread-оператором: JSON.stringify({ type, ...payload }).
+text
+
+ЗАПРЕЩЕНО: Использовать тип unknown в связке со spread-оператором: JSON.stringify({ type, ...payload }).
 
 🚫 Правило 7: Garbage Collection (GC) в Render Loop
 
 Внутри функции animate() и draw() в Canvas компонентах (вызывается 60-144 раза в секунду) ЗАПРЕЩЕНО выделять новую память:
 
-    Не создавать новые массивы []
-    Не создавать новые объекты {}
-    Не использовать методы .map(), .filter()
-    Все вычисления должны мутировать существующие переменные (Object Pool)
+text
+
+Не создавать новые массивы []
+Не создавать новые объекты {}
+Не использовать методы .map(), .filter()
+Все вычисления должны мутировать существующие переменные (Object Pool)
+
+✅ Правило 7.1: Zero-GC паттерны (v2.3)
+
+Кольцевые буферы вместо push/shift:
+
+TypeScript
+
+// ❌ ПЛОХО: создает новые объекты, вызывает GC
+trail.push({ x, y });
+if (trail.length > maxTrail) trail.shift();
+
+// ✅ ХОРОШО: переиспользует память
+const slot = samplePool[sampleHead];
+slot.x = x;
+slot.y = y;
+sampleHead = (sampleHead + 1) % maxSamples;
+
+Предаллокация объектов:
+
+TypeScript
+
+// ❌ ПЛОХО: создает объект каждый кадр
+return { x: pos.x, y: pos.y };
+
+// ✅ ХОРОШО: мутирует существующий объект
+this.currentPosition.x = pos.x;
+this.currentPosition.y = pos.y;
+return this.currentPosition;
+
+Предвычисленные строки:
+
+TypeScript
+
+// ❌ ПЛОХО: создает строку каждый кадр
+ctx.strokeStyle = rgba(74,158,255,${alpha});
+
+// ✅ ХОРОШО: использует предвычисленный массив
+const TRAIL_STYLES: string[] = [];
+for (let i = 0; i < MAX_TRAIL; i++) {
+TRAIL_STYLES.push(rgba(74,158,255,${(i / MAX_TRAIL * 0.8).toFixed(2)}));
+}
+// В draw():
+ctx.strokeStyle = TRAIL_STYLES[i];
 
 🚫 Правило 8: Canvas режимы - разные источники данных
 
 В медицинском режиме: используется positionHistory[] для анализа
 В игровом режиме: используется trail[] для визуального следа
 
-    ЗАПРЕЩЕНО: Смешивать эти массивы в drawGameTrail() и drawPositionHistory()
+text
+
+ЗАПРЕЩЕНО: Смешивать эти массивы в drawGameTrail() и drawPositionHistory()
 
 ✅ Правило 9: Cross-Component Communication (v2.2)
 
 Связь между ControlPanel и Canvas компонентами осуществляется через Window CustomEvents.
 
-    ЗАПРЕЩЕНО: Прямой вызов методов игры через bind:this из родительского компонента.
-    ПРАВИЛЬНО: ControlPanel отправляет события через window.dispatchEvent(new CustomEvent('gameStart', { detail: { difficulty } })).
-    События: gameStart, gamePause, gameRestart, gameStop.
+text
+
+ЗАПРЕЩЕНО: Прямой вызов методов игры через bind:this из родительского компонента.
+ПРАВИЛЬНО: ControlPanel отправляет события через window.dispatchEvent(new CustomEvent('gameStart', { detail: { difficulty } })).
+События: gameStart, gamePause, gameRestart, gameStop.
 
 ✅ Правило 10: Jitter Tolerance в Игровом Режиме (v2.2)
 
 Физический шум датчиков НЕ должен блокировать игровую механику.
 
-    Wobble (тряска корзинки): Эффект визуализирует резкие движения, но НЕ блокирует процесс dwellProgress при ловле шаров.
-    Реализация: В CollisionDetector.ts условие if (isOverlapping && !wobbling) заменено на if (isOverlapping).
-    Цель: Игрок не наказывается за естественную вариативность сигнала с датчиков.
+text
 
-4. БАЗОВЫЕ ИНТЕРФЕЙСЫ (DATA DICTIONARY)
+Wobble (тряска корзинки): Эффект визуализирует резкие движения, но НЕ блокирует процесс dwellProgress при ловле шаров.
+Реализация: В CollisionDetector.ts условие if (isOverlapping && !wobbling) заменено на if (isOverlapping).
+Цель: Игрок не наказывается за естественную вариативность сигнала с датчиков.
+
+✅ Правило 11: Минимизация реактивных обновлений стора (v2.3)
+
+Проблема: При частоте пакетов 50-100 Hz, обновление стора через state.update() 100 раз в секунду перегружает Svelte реактивность.
+
+Решение:
+
+text
+
+filteredPosition и interpolatedPosition НЕ хранятся в сторе
+Читаются напрямую через stabilogramStore.getRenderPosition() в animate()
+Стор обновляется только для UI-данных (не для render loop)
+
+TypeScript
+
+// ❌ ПЛОХО: 100 обновлений стора/сек
+state.update(s => ({
+...s,
+currentSample: sample,
+filteredPosition,
+interpolatedPosition,
+velocity
+}));
+
+// ✅ ХОРОШО: минимальные обновления
+state.update(s => {
+s.currentSample = sample;
+s.packetRate = recentCount;
+return s;
+});
+// В animate() читаем напрямую:
+const pos = stabilogramStore.getRenderPosition(); // Zero-GC
+
+    БАЗОВЫЕ ИНТЕРФЕЙСЫ (DATA DICTIONARY)
 
 TypeScript
 
@@ -174,41 +273,49 @@ interface Coordinates { x: number; y: number; z: number; f: number; }
 interface Vector2D { x: number; y: number; }
 
 interface SensorData {
-  d1: number;  // Верхний левый датчик
-  d2: number;  // Верхний правый датчик  
-  d3: number;  // Нижний правый датчик
-  d4: number;  // Нижний левый датчик
+d1: number; // Верхний левый датчик
+d2: number; // Верхний правый датчик
+d3: number; // Нижний правый датчик
+d4: number; // Нижний левый датчик
 }
 
 interface StabilogramSample {
-  sensors: SensorData;        // 1. Сырые данные с 4 датчиков
-  raw: Coordinates;           // 2. Вычисленные координаты CoP (в единицах датчика)
-  centered: Coordinates;      // 3. После трансформации осей и вычитания нуля
-  filtered: Coordinates;      // 4. Заглушка (реальная фильтрация идет на клиенте)
-  mm: Vector2D;               // 5. Физические координаты в мм
-  deviceTime: number;         // 6. Таймстемп с устройства
-  clientTime: number;         // 7. performance.now() при получении в браузере
-  packetNumber: number;       // 8. Порядковый номер пакета
+sensors: SensorData; // 1. Сырые данные с 4 датчиков
+raw: Coordinates; // 2. Вычисленные координаты CoP (в единицах датчика)
+centered: Coordinates; // 3. После трансформации осей и вычитания нуля
+filtered: Coordinates; // 4. После CoPSmartFilter (v2.3)
+mm: Vector2D; // 5. Физические координаты в мм
+deviceTime: number; // 6. Таймстемп с устройства
+clientTime: number; // 7. performance.now() при получении в браузере
+packetNumber: number; // 8. Порядковый номер пакета
 }
 
 interface CalibrationData {
-  sensorOffsets: SensorData;  // Смещение нуля для каждого датчика
-  platformSize: { width: number; height: number }; // Размер платформы в мм
-  sensorDistance: { x: number; y: number }; // Расстояние между датчиками в мм
-  timestamp: number;          // Временная метка калибровки
-  sampleCount: number;        // Количество сэмплов
-  isValid: boolean;           // Валидность калибровки
+sensorOffsets: SensorData; // Смещение нуля для каждого датчика
+platformSize: { width: number; height: number }; // Размер платформы в мм
+sensorDistance: { x: number; y: number }; // Расстояние между датчиками в мм
+timestamp: number; // Временная метка калибровки
+sampleCount: number; // Количество сэмплов
+isValid: boolean; // Валидность калибровки
 }
 
 interface AxisConfiguration {
-  swapXY: boolean;            // Поменять оси местами
-  invertX: boolean;           // Инвертировать ось X
-  invertY: boolean;           // Инвертировать ось Y
-  rotationDeg: number;        // Поворот на N градусов
+swapXY: boolean; // Поменять оси местами
+invertX: boolean; // Инвертировать ось X
+invertY: boolean; // Инвертировать ось Y
+rotationDeg: number; // Поворот на N градусов
 }
 
-1. ПАЙПЛАЙН ДАННЫХ И МАТЕМАТИКА
-Этап 1: Распаковка протокола (PacketParser.ts)
+// ✅ v2.3: Результат умной фильтрации
+interface FilteredCoP {
+x: number;
+y: number;
+wasFiltered: boolean; // Была ли применена фильтрация
+confidence: number; // 0-1, уверенность в данных
+}
+
+    ПАЙПЛАЙН ДАННЫХ И МАТЕМАТИКА
+    Этап 1: Распаковка протокола (PacketParser.ts)
 
     Пакет: 22 байта. Терминатор & (0x26). Формат: STATUS[1] + X[4] + Y[4] + Z[4] + F[4] + TIME[4] + &
     Кодировка (6-bit ASCII): 24-битное число со знаком упаковано в 4 байта. Смещения ASCII: 35-93 и 95-99.
@@ -218,7 +325,7 @@ TypeScript
 
 let result = 0;
 for (let i = 0; i < 4; i++) {
-  result |= (decodeLUT[bytes[offset + i]] << (i * 6));
+result |= (decodeLUT[bytes[offset + i]] << (i * 6));
 }
 if (result >= 0x800000) result -= 0x1000000; // Восстановление минуса
 
@@ -229,14 +336,17 @@ CoPCalculator: Вычисление центра давления
 TypeScript
 
 // Формулы CoP:
-const x = (sensorDistanceX / 2) *((d2 + d3) - (d1 + d4)) / totalForce;
-const y = (sensorDistanceY / 2)* ((d1 + d2) - (d3 + d4)) / totalForce;
+const x = (sensorDistanceX / 2) * ((d2 + d3) - (d1 + d4)) / totalForce;
+const y = (sensorDistanceY / 2) * ((d1 + d2) - (d3 + d4)) / totalForce;
 
-// ✅ ИСПРАВЛЕНИЯ v2.0:
-// - Защита от отрицательных значений после вычитания offset'ов
-// - Увеличена минимальная сила с 100 до 500 для стабильности  
-// - Clamp координат для защиты от экстремальных выбросов
-// - Диагностические методы для анализа качества калибровки
+✅ ИСПРАВЛЕНИЯ v2.0:
+
+text
+
+Защита от отрицательных значений после вычитания offset'ов
+Увеличена минимальная сила с 100 до 500 для стабильности
+Clamp координат для защиты от экстремальных выбросов
+Диагностические методы для анализа качества калибровки
 
 AxisTransform: Корректировка физической сборки
 
@@ -244,63 +354,108 @@ AxisTransform: Корректировка физической сборки
 
 Калибровка Нуля (CALIBRATE_ZERO):
 
-    Сервер копит 200 пакетов (увеличено с 100) и вычисляет Медиану (отсекает физические выбросы)
-    ✅ НОРМАЛИЗАЦИЯ v2.0: Вычитание минимального offset'а для баланса датчиков:
+text
+
+Сервер копит 200 пакетов (увеличено с 100) и вычисляет Медиану (отсекает физические выбросы)
+✅ НОРМАЛИЗАЦИЯ v2.0: Вычитание минимального offset'а для баланса датчиков:
 
 TypeScript
 
 const minOffset = Math.min(rawOffsets.d1, rawOffsets.d2, rawOffsets.d3, rawOffsets.d4);
 const offsets: SensorData = {
-  d1: rawOffsets.d1 - minOffset + 1000,
-  d2: rawOffsets.d2 - minOffset + 1000,
-  d3: rawOffsets.d3 - minOffset + 1000,
-  d4: rawOffsets.d4 - minOffset + 1000,
+d1: rawOffsets.d1 - minOffset + 1000,
+d2: rawOffsets.d2 - minOffset + 1000,
+d3: rawOffsets.d3 - minOffset + 1000,
+d4: rawOffsets.d4 - minOffset + 1000,
 };
+
+✅ Этап 2.5: CoPSmartFilter - Медианная фильтрация (v2.3)
+
+КРИТИЧЕСКОЕ ДОПОЛНЕНИЕ: Добавлен между CoPCalculator и AxisTransform для устранения рывков и замираний.
+
+Назначение:
+
+text
+
+Фильтрация выбросов в реальном времени (<1ms задержка)
+Детекция и реанимация замираний точки
+Медианный фильтр на скользящем окне из 5 последних значений
+
+Ключевые параметры:
+
+TypeScript
+
+bufferSize: 5 // размер кольцевого буфера
+maxJumpMm: 40 // порог выброса (мм за пакет)
+frozenThreshold: 10 // количество пакетов для детекции замирания
+epsilon: 0.05 // точность "одинаковости" координат (мм)
+
+Алгоритм детекции замирания:
+
+TypeScript
+
+// Если 10 пакетов подряд дают почти одинаковый CoP:
+if (distance < epsilon && frozenCount >= frozenThreshold) {
+// Добавляем микроскопический шум для "реанимации"
+const noise = 0.1;
+outputX += (Math.random() - 0.5) * noise;
+outputY += (Math.random() - 0.5) * noise;
+}
+
+Алгоритм фильтрации выбросов:
+
+TypeScript
+
+// Вычисляем медиану последних 5 значений
+const medianX = getMedianFromBuffer(bufferX);
+
+// Если скачок > 40mm, применяем агрессивное сглаживание
+if (jump > maxJumpMm) {
+const smoothFactor = Math.min(maxJumpMm / jump, 0.3);
+outputX = lastX + (medianX - lastX) * smoothFactor;
+}
 
 Этап 3: Фильтрация (KalmanFilter2D.ts)
 
-✅ УЛУЧШЕННАЯ ВЕРСИЯ v2.0:
+✅ УЛУЧШЕННАЯ ВЕРСИЯ v2.3:
 
-    Адаптивные коэффициенты вместо жестких констант
-    Защита от выбросов: Детекция аномальных скачков > 80мм
-    Ограничение скорости: Максимум 600 мм/с
-    Настраиваемые параметры: processNoise: 0.5, measurementNoise: 1.0
+text
+
+Адаптивные коэффициенты: processNoise: 0.3, measurementNoise: 0.8
+Автосброс (Hard Reset): Если 3 критических выброса (>120мм) подряд, фильтр переинициализируется
+Игнорирование экстремальных рывков: Измерения > 100мм отбрасываются
 
 TypeScript
 
-// Адаптивная коррекция в зависимости от доверия к измерению:
-const trustFactor = distance > outlierThreshold ? outlierThreshold / distance : 1.0;
-const posGain = 0.2 + (0.4 *trustFactor);  // 0.2-0.6
-const velGain = 0.1 + (0.2* trustFactor);  // 0.1-0.3
+// Адаптивная коррекция:
+const trustFactor = distance > outlierThreshold ? 0.2 : 0.8;
+const posGain = 0.5; // Базовый гейн
+this.state[0] += trustFactor * posGain * (measuredX - this.state[0]);
 
 Этап 4: Интерполяция и Canvas (PositionInterpolator.ts)
 
-✅ КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ v2.0:
+✅ КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ v2.3 (Zero-GC):
 
-    Увеличено время экстраполяции: с 40ms до 150ms
-    Адаптивное сглаживание: 0.5-0.8 в зависимости от расстояния до цели
-    Экспоненциальное затухание скорости: более реалистичное поведение
-    Zero-GC оптимизации: переиспользование объектов
+text
+
+Кольцевой буфер вместо push/shift массивов
+Предаллокация объектов: все Vector2D создаются один раз
+Увеличено время экстраполяции: до 100ms
+Плавное затухание (Fading): Если данных нет > 500ms, точка плавно стремится к центру (0,0), а не замирает на месте.
 
 TypeScript
 
-// Улучшенная экстраполяция с затуханием:
-if (timeSince <= 150) {  // ✅ Было 40ms
-  const dt = timeSince / 1000;
-  const decay = Math.exp(-dt * 3);  // Экспоненциальное затухание
-  
-  target = {
-    x: latest.position.x + latest.velocity.x *dt* decay,
-    y: latest.position.y + latest.velocity.y *dt* decay
-  };
+// Плавное затухание при потере данных:
+if (timeSince > 500) {
+target = { x: 0, y: 0 };
 }
 
 Экранные координаты (КРИТИЧЕСКИ ВАЖНО):
 
 TypeScript
 
-const screenX = canvasWidth / 2 + pos.x *scale;
-const screenY = canvasHeight / 2 - pos.y* scale; // МИНУС ОБЯЗАТЕЛЕН (инверсия Y)
+const screenX = canvasWidth / 2 + pos.x * scale;
+const screenY = canvasHeight / 2 - pos.y * scale; // МИНУС ОБЯЗАТЕЛЕН (инверсия Y)
 
 ✅ Этап 5: Масштабирование для Игрового Режима (v2.2)
 
@@ -311,61 +466,62 @@ const screenY = canvasHeight / 2 - pos.y* scale; // МИНУС ОБЯЗАТЕЛ�
 TypeScript
 
 export const DIFFICULTY_PRESETS = {
-  [DIFF_EASY]: {
-    gameScale: 4,  // ✅ Было 7
-    comfortZoneRadiusMm: 20,
-    // ...
-  },
-  [DIFF_MEDIUM]: {
-    gameScale: 5,  // ✅ Было 9
-    comfortZoneRadiusMm: 15,
-    // ...
-  },
-  [DIFF_HARD]: {
-    gameScale: 6,  // ✅ Было 12
-    comfortZoneRadiusMm: 10,
-    // ...
-  },
+[DIFF_EASY]: {
+gameScale: 4, // ✅ Было 7
+comfortZoneRadiusMm: 20,
+},
+[DIFF_MEDIUM]: {
+gameScale: 5, // ✅ Было 9
+comfortZoneRadiusMm: 15,
+},
+[DIFF_HARD]: {
+gameScale: 6, // ✅ Было 12
+comfortZoneRadiusMm: 10,
+},
 };
 
-1. УПРАВЛЕНИЕ СОСТОЯНИЕМ (CONNECTION STATE MACHINE)
+    УПРАВЛЕНИЕ СОСТОЯНИЕМ (CONNECTION STATE MACHINE)
 
 Строгая иерархия флагов в stabilogramStore:
 
 isWsConnected (Транспортный уровень):
 
-    Связь: Browser <-> Node.js
-    Следствие: Если false → UI полностью блокируется
+text
+
+Связь: Browser <-> Node.js
+Следствие: Если false → UI полностью блокируется
 
 isDeviceConnected (Аппаратный уровень):
 
-    Связь: Node.js <-> Arduino (COM-порт)
-    Управляется: Событиями от сервера SERIAL_CONNECTED / SERIAL_DISCONNECTED
-    Правило UI: Если false → Кнопка "Подключить" активна, кнопка "Калибровка" заблокирована
-    Правило каскада: При isWsConnected === false, стор принудительно ставит isDeviceConnected = false
+text
+
+Связь: Node.js <-> Arduino (COM-порт)
+Управляется: Событиями от сервера SERIAL_CONNECTED / SERIAL_DISCONNECTED
+Правило UI: Если false → Кнопка "Подключить" активна, кнопка "Калибровка" заблокирована
+Правило каскада: При isWsConnected === false, стор принудительно ставит isDeviceConnected = false
 
 isCalibrated (Готовность к работе):
 
-    Управляется: Событием CALIBRATION_COMPLETE
-    Правило UI: Если false → Предупреждение о необходимости калибровки
+text
 
-✅ Расширения stabilogramStore (v2.2)
+Управляется: Событием CALIBRATION_COMPLETE
+Правило UI: Если false → Предупреждение о необходимости калибровки
 
-Добавлены методы для работы с игровым режимом:
+✅ Расширения stabilogramStore (v2.3)
+
+Оптимизация для производительности:
 
 TypeScript
 
-// stabilogram.ts
-initializeGameMode(viewport: Vector2D): void
-  // Сбрасывает Kalman Filter и Interpolator, устанавливает флаг isGameModeInitialized
-  
-resetGameMode(): void
-  // Очищает флаг игрового режима при переходе в медицинский режим
-  
-getRenderVelocity(): Vector2D
-  // Zero-GC метод для получения вектора скорости (используется в игре для анимаций)
+// ✅ v2.3: Прямое чтение позиции (минуя реактивность):
+getRenderPosition(): Vector2D // Zero-GC, возвращает ссылку на объект из интерполятора
 
-1. WEBSOCKET ПРОТОКОЛ (API CONTRACTS)
+// Методы для игрового режима:
+initializeGameMode(viewport: Vector2D): void
+resetGameMode(): void
+getRenderVelocity(): Vector2D
+
+    WEBSOCKET ПРОТОКОЛ (API CONTRACTS)
 
 Все сообщения передаются через JSON.stringify({ type, ...payload }).
 
@@ -383,151 +539,132 @@ Server → Client (Events):
 
 TypeScript
 
-{ type: 'DATA', data: StabilogramSample }  // Поток 50-100 Гц
+{ type: 'DATA', data: StabilogramSample } // Поток 50-100 Гц
 { type: 'PORTS_LIST', ports: Array<{path, manufacturer}> }
 { type: 'CONNECTED', serialConnected: boolean, calibrated: boolean }
 { type: 'SERIAL_CONNECTED', port: string, testMode: boolean }
 { type: 'SERIAL_DISCONNECTED' }
-{ type: 'CALIBRATION_STARTED' }                    // ✅ v2.0
-{ type: 'CALIBRATION_PROGRESS', progress: number, total: number }  // ✅ v2.0
+{ type: 'CALIBRATION_STARTED' }
+{ type: 'CALIBRATION_PROGRESS', progress: number, total: number }
 { type: 'CALIBRATION_COMPLETE', calibration: CalibrationData }
 { type: 'ERROR', error: string }
 
 ✅ WebSocket Client API (v2.2)
 
-Проблема: ControlPanel напрямую использовал приватный метод send(), нарушая инкапсуляцию.
-
-Решение: В packages/client/src/lib/websocket/client.ts добавлены публичные методы:
-
 TypeScript
 
 export class StabilogramClient extends SimpleEventEmitter {
-  // Публичное API
-  listPorts(): void
-  connectDevice(portPath: string, baudRate: number, testMode: boolean): void
-  disconnectDevice(): void
-  calibrateZero(): void
-  configureAxes(config: AxisConfiguration): void
-  
-  // Event System (SimpleEventEmitter для браузера)
-  on(event: string, callback: (data: unknown) => void): () => void
-  private emit(event: string, data: unknown): void
+// Публичное API
+listPorts(): void
+connectDevice(portPath: string, baudRate: number, testMode: boolean): void
+disconnectDevice(): void
+calibrateZero(): void
+configureAxes(config: AxisConfiguration): void
+
+// Event System (SimpleEventEmitter для браузера)
+on(event: string, callback: (data: unknown) => void): () => void
+private emit(event: string, data: unknown): void
 }
 
 SimpleEventEmitter: Собственная реализация Pub/Sub для браузерного окружения (заменяет Node.js EventEmitter).
 
-✅ УЛУЧШЕНИЯ v2.0:
+    ДИАГНОСТИЧЕСКИЕ РЕЖИМЫ И ОТЛАДКА (v2.3)
+    ✅ MedicalStabilogramCanvas - Режимы визуализации
 
-    Добавлены события прогресса калибровки
-    Полная обработка всех событий в WebSocket клиенте
-    Буферизация сообщений для разгрузки UI thread
+Режимы отображения (переключение кликом на заголовок или кнопками):
 
-8. МЕДИЦИНСКИЙ ИНТЕРФЕЙС И UX
-ControlPanel.svelte - Универсальная панель управления (v2.2)
+text
 
-Ширина: 380px (увеличено с 300px для предотвращения горизонтального скролла).
+NORMAL - стандартный режим с полной обработкой через фильтры
+RAW - прямое отображение mm координат без Kalman/Interpolation
+SENSORS - детальная визуализация всех 4 датчиков
+TEST - генерация тестовых данных (sin/cos) для проверки Canvas
 
-Проп gameMode: Переключает отображение между медицинским и игровым режимами.
+Режим SENSORS (диагностика аппаратуры):
 
-Функциональность:
+TypeScript
 
-    Подключение устройства: Список портов, тестовый режим
-    Калибровка: Визуальный прогресс, предупреждения
-    Медицинский режим: Запись и анализ, экспорт данных
-    Игровой режим (v2.2): Выбор сложности, управление игрой (старт/пауза/перезапуск/выход), отображение статистики в реальном времени
+// Графики в реальном времени для каждого датчика:
 
-Связь с Canvas: Отправка CustomEvents (gameStart, gamePause, etc.) через window.dispatchEvent.
-MedicalStabilogramCanvas.svelte - Двухрежимный канвас
+    Шкала диапазона (min/max значений)
+    Текущее значение
+    График изменения за последние 200 точек
+    Диаграмма платформы с визуализацией нагрузки
+
+    МЕДИЦИНСКИЙ ИНТЕРФЕЙС И UX
+    ControlPanel.svelte - Универсальная панель управления (v2.2)
+
+    Ширина: 380px (увеличено с 300px для предотвращения горизонтального скролла).
+    Проп gameMode: Переключает отображение между медицинским и игровым режимами.
+
+MedicalStabilogramCanvas.svelte - Многорежимный канвас (v2.3)
 
 Медицинский режим (medicalMode: true):
 
-    Белый фон, профессиональная сетка с подписями осей
-    Зоны стабильности: Комфорт (15мм, зеленый), Предупреждение (30мм, желтый)
-    Метрики реального времени:
-        Оценка стабильности (0-100%)
-        Средняя скорость (мм/с)
-        Общее расстояние (м)
-        Время сессии
-    История позиций: Синий след для анализа траектории
-    Цветовая индикация позиции: Зеленый/Желтый/Красный по зонам
+text
+
+Белый фон, профессиональная сетка с подписями осей
+Зоны стабильности: Комфорт (15мм, зеленый), Предупреждение (30мм, желтый)
+Метрики реального времени: стабильность, скорость, расстояние, время
+История позиций: Синий след для анализа траектории
 
 Игровой режим (medicalMode: false):
 
-    Черный фон, научная сетка
-    Свечение и эффекты: Градиентный персонаж с изменяемым размером по скорости
-    Яркий след: Голубой с альфа-градиентом
-    Индикатор направления: Стрелка при движении
+text
 
-Экспорт данных:
+Черный фон, научная сетка
+Свечение и эффекты: Градиентный персонаж с размером по скорости
+Яркий след: Голубой с альфа-градиентом
 
-    JSON файлы с полной историей позиций и метрик
-    Автоматическое именование с timestamp'ом
-    Совместимость с Windows (замена двоеточий на дефисы)
+    КЛЮЧЕВЫЕ ИСПРАВЛЕНИЯ v2.3 - РЕШЕНИЕ ПРОБЛЕМ С ДАННЫМИ
+    ✅ Проблема: Рывки точки (Телепортация)
 
-✅ BallCatcherCanvas.svelte - Игровой режим "Поймай мяч" (v2.2)
+Причина: Физические выбросы данных с датчиков (скачки до 80,000 единиц).
 
-Архитектура: Использует игровой движок BallCatcherGame (см. раздел 12).
+Решение: CoPSmartFilter с медианной фильтрацией на сервере
 
-Механика ловли шаров:
+text
 
-    Игрок управляет корзинкой, перемещая центр тяжести на платформе.
-    Шары падают сверху вниз с разной скоростью и цветами.
-    Чтобы поймать шар, нужно удерживать корзинку на нём 0.5-0.8 сек (dwell time).
-    Во время удержания вокруг шара отрисовывается зелёное кольцо прогресса (dwell ring).
-    При успешной ловле шар плавно увеличивается и исчезает (+10 очков).
-    При пропуске целевого шара он уменьшается с красным эффектом (-5 очков).
+Кольцевой буфер из 5 последних значений CoP
+При скачке >40mm применяется сглаживание до 30% амплитуды
+Результат: Рывки отсекаются до попадания на клиент.
 
-Зона комфорта: Удержание корзинки в центральном круге > 10 сек → бонус "+50 БАЛАНС!".
+✅ Проблема: Замирание точки
 
-Визуальные эффекты:
+Причина: Одинаковый результат CoP при разных значениях датчиков или потеря пакетов.
 
-    Wobble (тряска корзинки) — реакция на резкие движения (НЕ блокирует ловлю).
-    Glow (свечение) целевых шаров.
-    Всплывающие тексты очков (floating text) с анимацией scale/fade.
-    Flash при смене целевого цвета (этап 2+).
+Решение: Детекция замираний и Fading
 
-Пауза: При потере связи игра автоматически ставится на паузу с затемнением экрана и надписью "⏸️ ПАУЗА".
+text
 
-Проп hideGameControls: Если true, скрывает встроенные кнопки управления (используется когда управление делегируется в ControlPanel).
-9. КЛЮЧЕВЫЕ ИСПРАВЛЕНИЯ v2.0
+Если 10 пакетов подряд CoP не меняется, добавляется шум ±0.05мм.
+Если данных нет > 500мс, интерполятор плавно ведет точку к (0,0).
+Результат: Точка всегда кажется "живой" и не зависает в углу.
 
-Устранены проблемы стабильности:
+✅ Проблема: Смещение центра после рывка
 
-    ✅ Замирание точки: Увеличена экстраполяция с 40ms до 150ms
-    ✅ Телепортации: Адаптивный Kalman Filter с защитой от выбросов
-    ✅ Кнопка отключения: Полная очистка тестового режима в disconnectSerialPort()
-    ✅ Игровой режим: Исправлено отображение следа через переменную trail[]
-    ✅ Калибровка: Нормализация offset'ов для сбалансированности датчиков
+Причина: Kalman Filter накапливает ошибку при резком скачке.
 
-Улучшена производительность:
+Решение: Автосброс (Hard Reset)
 
-    ✅ Zero-GC в render loop: Предаллокация объектов, мутация вместо создания
-    ✅ WebSocket буферизация: Разгрузка UI thread
-    ✅ Ограничение скоростей: Защита от нереальных значений
+text
 
-Улучшен UX:
+Если зафиксировано 3 критических выброса (>120мм) подряд, фильтр сбрасывается и инициализируется заново по текущей позиции.
+Результат: Точка мгновенно возвращается к реальному положению.
 
-    ✅ Прогресс калибровки: Визуальный индикатор в реальном времени
-    ✅ Профессиональный медицинский интерфейс: Зоны стабильности, метрики
-    ✅ Обработка ошибок: Полная система событий через WebSocket
-
-10. ФАЙЛОВАЯ СТРУКТУРА КОНЕЧНЫХ ФАЙЛОВ
+    ФАЙЛОВАЯ СТРУКТУРА КОНЕЧНЫХ ФАЙЛОВ
 
 Проверенные и работающие файлы:
 
 text
 
-✅ packages/server/src/index.ts - Полная серверная логика
-✅ packages/client/src/lib/websocket/client.ts - WS клиент с SimpleEventEmitter и публичным API
-✅ packages/client/src/lib/components/MedicalStabilogramCanvas.svelte - Медицинский канвас
-✅ packages/client/src/lib/components/ControlPanel.svelte - Универсальная панель (380px, 2 режима)
-✅ packages/client/src/lib/components/BallCatcherCanvas.svelte - Игровой канвас (v2.2)
-✅ packages/client/src/lib/stores/stabilogram.ts - Основной стор с игровыми методами
-✅ packages/client/src/lib/stores/gameState.ts - Стор состояния игры (v2.2)
-✅ packages/client/src/lib/filters/KalmanFilter.ts - Улучшенный фильтр
-✅ packages/client/src/lib/rendering/PositionInterpolator.ts - Улучшенная интерполяция
+✅ packages/server/src/index.ts - Полная серверная логика + CoPSmartFilter
+✅ packages/shared/src/CoPSmartFilter.ts - Медианный фильтр (v2.3)
 ✅ packages/shared/src/CoPCalculator.ts - Защищенный расчет CoP
-✅ packages/client/src/lib/game/ - Полный игровой движок (v2.2)
+✅ packages/client/src/lib/components/MedicalStabilogramCanvas.svelte - Медицинский канвас (v2.3)
+✅ packages/client/src/lib/stores/stabilogram.ts - Оптимизированный стор (v2.3)
+✅ packages/client/src/lib/filters/KalmanFilter.ts - Улучшенный фильтр с автосбросом (v2.3)
+✅ packages/client/src/lib/rendering/PositionInterpolator.ts - Zero-GC интерполяция с затуханием (v2.3)
 
 1. ПРАВИЛА РАБОТЫ С КОДОВОЙ БАЗОЙ
 

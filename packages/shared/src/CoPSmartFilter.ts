@@ -63,6 +63,7 @@ export class CoPSmartFilter {
   private lastTimestamp = 0;
 
   private frozenCount = 0;
+  private initialized = false;
   private stats: FilterStats;
 
   private config: SmartFilterConfig = {
@@ -88,6 +89,14 @@ export class CoPSmartFilter {
   };
 
   constructor(config?: Partial<SmartFilterConfig>) {
+    if (
+      config?.bufferSize !== undefined &&
+      (!Number.isInteger(config.bufferSize) ||
+        config.bufferSize < 1 ||
+        config.bufferSize > 1000)
+    ) {
+      throw new Error('Invalid filter buffer size');
+    }
     if (config) {
       this.config = { ...this.config, ...config };
     }
@@ -95,7 +104,7 @@ export class CoPSmartFilter {
     this.initializeBuffers();
     this.stats = this.createInitialStats();
 
-    console.log("🎯 CoPSmartFilter v2.3+ initialized (buffer-safe):", {
+    console.log('🎯 CoPSmartFilter v2.3+ initialized (buffer-safe):', {
       gentle: `${this.config.gentleJumpMm}mm → ${((1 - this.config.gentleSmoothFactor) * 100).toFixed(0)}%`,
       sharp: `${this.config.sharpJumpMm}mm → ${((1 - this.config.sharpSmoothFactor) * 100).toFixed(0)}%`,
       extreme: `${this.config.extremeJumpMm}mm → ${((1 - this.config.extremeSmoothFactor) * 100).toFixed(0)}%`,
@@ -124,42 +133,30 @@ export class CoPSmartFilter {
   }
 
   filter(
-    input: { x: number; y: number; z?: number; f?: number },
+    input: { x: number; y: number; z?: number; f?: number; isValid?: boolean },
     timestamp: number,
   ): FilteredCoP {
     this.stats.totalSamples++;
 
-    // ✅ НОВАЯ ЛОГИКА: Проверяем на нулевые входы от CoPCalculator
-    const inputDistance = Math.sqrt(input.x ** 2 + input.y ** 2);
-    const isZeroInput = inputDistance < this.config.zeroInputThreshold;
+    // (0,0) is a real position. Only explicit validity/load determines dropout.
+    const isZeroInput =
+      input.isValid === false ||
+      !Number.isFinite(input.x) ||
+      !Number.isFinite(input.y) ||
+      (input.f !== undefined &&
+        (!Number.isFinite(input.f) ||
+          input.f < this.config.zeroInputThreshold));
 
-    if (
-      isZeroInput &&
-      this.config.ignoreZeroInputs &&
-      this.stats.totalSamples > 1
-    ) {
+    if (isZeroInput) {
       this.stats.zeroInputsIgnored++;
 
-      if (this.stats.zeroInputsIgnored % 100 === 1) {
-        console.warn(
-          "🚫 CoPSmartFilter: Ignoring zero input from CoPCalculator:",
-          {
-            input: { x: input.x.toFixed(3), y: input.y.toFixed(3) },
-            ignoredCount: this.stats.zeroInputsIgnored,
-            returningLast: {
-              x: this.lastValidX.toFixed(1),
-              y: this.lastValidY.toFixed(1),
-            },
-          },
-        );
-      }
-
+      this.initialized = false;
       return {
         x: this.lastValidX,
         y: this.lastValidY,
         wasFiltered: true,
-        confidence: 0.5,
-        filterType: `zero-input-ignored (count: ${this.stats.zeroInputsIgnored})`,
+        confidence: 0,
+        filterType: 'invalid-or-no-load',
       };
     }
 
@@ -170,14 +167,15 @@ export class CoPSmartFilter {
     }
 
     // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Первый вызов - инициализация без фильтрации
-    if (this.stats.totalSamples === 1) {
+    if (!this.initialized) {
       this.initializeWithFirstSample(input.x, input.y, timestamp);
+      this.initialized = true;
       return {
         x: input.x,
         y: input.y,
         wasFiltered: false,
         confidence: 1.0,
-        filterType: "initialization",
+        filterType: 'initialization',
       };
     }
 
@@ -260,10 +258,10 @@ export class CoPSmartFilter {
     this.frozenCount = 0;
 
     // ✅ НОВОЕ: Принудительно отмечаем буфер как незаполненный
-    this.head = 1; // Первый элемент уже записан
-    this.isBufferFull = false;
+    this.head = 1 % this.config.bufferSize;
+    this.isBufferFull = this.config.bufferSize === 1;
 
-    console.log("🎯 CoPSmartFilter initialized with first sample:", {
+    console.log('🎯 CoPSmartFilter initialized with first sample:', {
       x: x.toFixed(1),
       y: y.toFixed(1),
     });
@@ -277,7 +275,7 @@ export class CoPSmartFilter {
     if (!this.isBufferFull && this.head === 0) {
       this.isBufferFull = true;
       console.log(
-        "✅ CoPSmartFilter buffer is now FULL, median filtering enabled",
+        '✅ CoPSmartFilter buffer is now FULL, median filtering enabled',
       );
     }
   }
@@ -288,17 +286,17 @@ export class CoPSmartFilter {
     velocity: number,
   ): FilteredCoP {
     // ✅ КЛАССИФИКАЦИЯ ДВИЖЕНИЯ
-    let movementType: "gentle" | "sharp" | "extreme";
+    let movementType: 'gentle' | 'sharp' | 'extreme';
     let smoothFactor: number;
     let confidence: number;
 
     if (jumpDistance <= this.config.gentleJumpMm) {
-      movementType = "gentle";
+      movementType = 'gentle';
       smoothFactor = this.config.gentleSmoothFactor;
       confidence = 1.0;
       this.stats.gentleMovements++;
     } else if (jumpDistance <= this.config.sharpJumpMm) {
-      movementType = "sharp";
+      movementType = 'sharp';
 
       if (this.config.adaptiveSmoothing) {
         const sharpnessRatio =
@@ -316,14 +314,14 @@ export class CoPSmartFilter {
       confidence = 0.9;
       this.stats.sharpMovements++;
     } else {
-      movementType = "extreme";
+      movementType = 'extreme';
       smoothFactor = this.config.extremeSmoothFactor;
       confidence = 0.4;
       this.stats.extremeOutliers++;
     }
 
     // ✅ ПРИМЕНЯЕМ ФИЛЬТРАЦИЮ
-    if (movementType === "gentle" || smoothFactor < 0.1) {
+    if (movementType === 'gentle' || smoothFactor < 0.1) {
       // Плавные движения почти не фильтруем
       return {
         x: input.x,
@@ -336,14 +334,14 @@ export class CoPSmartFilter {
       // ✅ КРИТИЧЕСКАЯ ПРОВЕРКА: Буфер должен быть полным!
       if (!this.isBufferFull) {
         console.error(
-          "🚨 CRITICAL: Trying to use median filter with unfilled buffer!",
+          '🚨 CRITICAL: Trying to use median filter with unfilled buffer!',
         );
         return {
           x: input.x,
           y: input.y,
           wasFiltered: false,
           confidence: 0.5,
-          filterType: "buffer-not-ready",
+          filterType: 'buffer-not-ready',
         };
       }
 
@@ -378,12 +376,9 @@ export class CoPSmartFilter {
     }
 
     if (this.frozenCount >= this.config.frozenThreshold) {
-      const noise = 0.05;
-      result.x += (Math.random() - 0.5) * noise;
-      result.y += (Math.random() - 0.5) * noise;
-      result.wasFiltered = true;
+      // Never fabricate movement in a stationary measurement.
       result.confidence = Math.min(result.confidence, 0.8);
-      result.filterType = `frozen-reanimation (${this.frozenCount})`;
+      result.filterType = `stationary (${this.frozenCount})`;
       this.stats.frozenDetections++;
     }
   }
@@ -412,7 +407,7 @@ export class CoPSmartFilter {
 
     if (effectiveSize === 0) {
       console.error(
-        "🚨 CRITICAL: getMedianFromBuffer called with empty buffer!",
+        '🚨 CRITICAL: getMedianFromBuffer called with empty buffer!',
       );
       return 0;
     }
@@ -430,8 +425,20 @@ export class CoPSmartFilter {
   // ✅ ПУБЛИЧНЫЕ МЕТОДЫ
 
   updateConfig(newConfig: Partial<SmartFilterConfig>): void {
+    if (
+      newConfig.bufferSize !== undefined &&
+      (!Number.isInteger(newConfig.bufferSize) ||
+        newConfig.bufferSize < 1 ||
+        newConfig.bufferSize > 1000)
+    ) {
+      throw new Error('Invalid filter buffer size');
+    }
+    const resized =
+      newConfig.bufferSize !== undefined &&
+      newConfig.bufferSize !== this.config.bufferSize;
     this.config = { ...this.config, ...newConfig };
-    console.log("🎯 CoPSmartFilter v2.3+ config updated:", newConfig);
+    if (resized) this.reset();
+    console.log('🎯 CoPSmartFilter v2.3+ config updated:', newConfig);
   }
 
   reset(): void {
@@ -443,8 +450,9 @@ export class CoPSmartFilter {
     this.lastValidY = 0;
     this.lastTimestamp = 0;
     this.frozenCount = 0;
+    this.initialized = false;
     this.stats = this.createInitialStats();
-    console.log("🔄 CoPSmartFilter v2.3+ reset (buffer cleared)");
+    console.log('🔄 CoPSmartFilter v2.3+ reset (buffer cleared)');
   }
 
   getStats(): FilterStats {
@@ -509,7 +517,7 @@ export class CoPSmartFilter {
       adaptiveSmoothing: true,
       velocityAware: true,
     });
-    console.log("🎯 CoPSmartFilter v2.3+ optimized for sharp movements");
+    console.log('🎯 CoPSmartFilter v2.3+ optimized for sharp movements');
   }
 }
 

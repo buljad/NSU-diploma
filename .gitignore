@@ -102,3 +102,8 @@ temp/
 .Spotlight-V100
 .Trashes
 ehthumbs.db
+# Product build and local verification
+release/
+.tmp/
+**/.test-dist/
+

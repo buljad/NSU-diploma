@@ -82,6 +82,9 @@
 
 	let selectedDifficulty = DIFF_MEDIUM;
 	let lastSnapshotUpdate = 0;
+	let completionEmitted = false;
+	let controlMessage = '';
+	const comfortZoneDash = [8, 6];
 
 	// ════════════════════════════════════════════════
 	// Event handlers (типизированные)
@@ -94,20 +97,14 @@
 	}
 
 	function handleGamePause(event: Event): void {
-		console.log('🎮 Received pause event, current game state:', {
-			'game?.isRunning': game?.isRunning,
-			'game?.isPaused': game?.isPaused
-		});
 		pauseGame();
 	}
 
 	function handleGameRestart(event: Event): void {
-		console.log('🎮 Received restart event');
 		restartGame();
 	}
 
 	function handleGameStop(event: Event): void {
-		console.log('🎮 Received stop event');
 		stopGame();
 	}
 
@@ -115,18 +112,6 @@
 	$: stabilogramState = $stabilogramStore;
 	$: stage = $currentStage;
 	$: gameActive = $isGameActive;
-
-	// ✅ Отладочная реактивность
-	$: if (showDebug) {
-		console.log('🎮 Game State:', {
-			stage,
-			gameActive,
-			'game?.isRunning': game?.isRunning,
-			'game?.isPaused': game?.isPaused,
-			stabilogramConnected: stabilogramState.isWsConnected && stabilogramState.isDeviceConnected,
-			isInitialized
-		});
-	}
 
 	// ════════════════════════════════════════════════
 	// Lifecycle
@@ -175,8 +160,6 @@
 
 		isInitialized = true;
 		startRenderLoop();
-
-		console.log('🎮 Game initialized:', { width, height, stage: STAGE_MENU });
 	}
 
 	function cleanup(): void {
@@ -215,28 +198,11 @@
 	function updateGame(now: number): void {
 		if (!game) return;
 
-		// ✅ Проверяем подключение только для запущенной игры
-		if (
-			game.isRunning &&
-			(!stabilogramState.isWsConnected || !stabilogramState.isDeviceConnected)
-		) {
-			if (!game.isPaused) {
-				game.pause();
-				console.log('⏸️ Game paused: connection lost');
-			}
-			return;
-		}
-
-		// Resume если была пауза и теперь все подключено
-		if (
-			game.isPaused &&
-			game.isRunning &&
-			stabilogramState.isWsConnected &&
-			stabilogramState.isDeviceConnected
-		) {
-			game.resume();
-			console.log('▶️ Game resumed: connection restored');
-		}
+		game.updateTransportState(
+			stabilogramState.isWsConnected && stabilogramState.isDeviceConnected,
+			stabilogramStore.isStreamFresh(now),
+			now
+		);
 
 		// ✅ Получаем позицию только если игра запущена
 		if (game.isRunning && !game.isPaused) {
@@ -263,13 +229,12 @@
 		ctx.fillRect(0, 0, width, height);
 
 		// ✅ Всегда рисуем что-то, никогда не оставляем черный экран
-		if (stage === STAGE_MENU || !game.isRunning) {
-			drawMenu();
+		if (game.stageManager.currentStage === STAGE_RESULTS) {
+			drawResults();
 			return;
 		}
-
-		if (stage === STAGE_RESULTS) {
-			drawResults();
+		if (!game.isRunning) {
+			drawMenu();
 			return;
 		}
 
@@ -307,7 +272,13 @@
 
 		ctx.font = '24px sans-serif';
 		ctx.fillStyle = '#cccccc';
-		ctx.fillText('Проверьте подключение стабилометра', width * 0.5, height * 0.55);
+		ctx.fillText(
+			game.pauseReason === 'manual'
+				? 'Нажмите «Продолжить», когда будете готовы'
+				: 'Ожидание свежих данных от платформы',
+			width * 0.5,
+			height * 0.55
+		);
 
 		if (showDebug) {
 			ctx.font = '16px monospace';
@@ -322,12 +293,17 @@
 	 * Обновить Svelte store (НЕ в каждом кадре — ~2-4 Гц).
 	 */
 	function updateGameStateStore(now: number): void {
-		if (now - lastSnapshotUpdate < 250) return; // 4 Гц
+		const completed = game?.stageManager.currentStage === STAGE_RESULTS && !completionEmitted;
+		if (!completed && now - lastSnapshotUpdate < 250) return; // 4 Гц
 		lastSnapshotUpdate = now;
 
 		if (game) {
 			const snapshot = game.getSnapshot(); // ⚠️ АЛЛОКАЦИЯ (но редко)
 			gameStateStore.updateSnapshot(snapshot);
+			if (snapshot.stage === STAGE_RESULTS && !completionEmitted) {
+				completionEmitted = true;
+				window.dispatchEvent(new CustomEvent('gameCompleted', { detail: snapshot }));
+			}
 		}
 	}
 
@@ -473,7 +449,7 @@
 		ctx.save();
 		ctx.strokeStyle = color;
 		ctx.lineWidth = 2;
-		ctx.setLineDash([8, 6]);
+		ctx.setLineDash(comfortZoneDash);
 
 		ctx.beginPath();
 		ctx.arc(centerX, centerY, COMFORT_ZONE_VISUAL_RADIUS, 0, Math.PI * 2);
@@ -517,7 +493,8 @@
 	}
 
 	function drawHUD(): void {
-		const gameState = game.getSnapshot();
+		const score = game.scoreManager;
+		const stageManager = game.stageManager;
 
 		// ✅ ОСНОВНАЯ ИНФОРМАЦИЯ
 		ctx.font = HUD_FONT;
@@ -528,19 +505,19 @@
 		let hudY = 30;
 		const lineHeight = 28;
 
-		ctx.fillText(`Счёт: ${gameState.score}`, hudLeft, hudY);
+		ctx.fillText(`Счёт: ${score.score}`, hudLeft, hudY);
 		hudY += lineHeight;
 
-		if (gameState.streak > 0) {
-			ctx.fillText(`Серия: ${gameState.streak}`, hudLeft, hudY);
+		if (score.streak > 0) {
+			ctx.fillText(`Серия: ${score.streak}`, hudLeft, hudY);
 			hudY += lineHeight;
 		}
 
-		ctx.fillText(`Поймано: ${gameState.catchCount}`, hudLeft, hudY);
+		ctx.fillText(`Поймано: ${score.catchCount}`, hudLeft, hudY);
 		hudY += lineHeight;
 
-		if (gameState.stageTimeRemaining > 0) {
-			ctx.fillText(`Время: ${gameState.stageTimeRemaining.toFixed(0)}с`, hudLeft, hudY);
+		if (stageManager.getTimeRemainingSec() > 0) {
+			ctx.fillText(`Время: ${stageManager.getTimeRemainingSec().toFixed(0)}с`, hudLeft, hudY);
 			hudY += lineHeight;
 		}
 
@@ -553,13 +530,17 @@
 		if (game.stageManager.config.useSymbols) {
 			ctx.fillText('Лови звёзды ★', width * 0.5, hintY);
 		} else {
-			ctx.fillText(`Лови ${gameState.targetColorName}!`, width * 0.5, hintY);
+			ctx.fillText(`Лови ${stageManager.getTargetColorName()}!`, width * 0.5, hintY);
 		}
 
 		// ✅ ПОДСКАЗКА МЕХАНИКИ
 		ctx.font = '16px sans-serif';
 		ctx.fillStyle = '#88c999';
-		ctx.fillText('Наведи корзинку на шар и подержи 0.5-0.8 сек', width * 0.5, hintY + 30);
+		ctx.fillText(
+			`Удерживайте корзинку на шаре ${(stageManager.effectiveDwellTimeMs / 1000).toFixed(1)} с`,
+			width * 0.5,
+			hintY + 30
+		);
 
 		// ✅ СТАТУС ПАУЗЫ
 		if (game.isPaused) {
@@ -578,7 +559,7 @@
 	}
 
 	function drawColorChangeFlash(now: number): void {
-		const timeSinceChange = now - game.stageManager.lastColorChangeTime;
+		const timeSinceChange = game.simulationTime - game.stageManager.lastColorChangeTime;
 		if (timeSinceChange > COLOR_CHANGE_FLASH_MS) return;
 
 		const progress = timeSinceChange / COLOR_CHANGE_FLASH_MS;
@@ -632,7 +613,7 @@
 	}
 
 	function drawResults(): void {
-		const gameState = game.getSnapshot();
+		const score = game.scoreManager;
 
 		ctx.font = 'bold 42px sans-serif';
 		ctx.fillStyle = '#FFE66D';
@@ -645,9 +626,9 @@
 		const y = height * 0.45;
 		const lineHeight = 35;
 
-		ctx.fillText(`Итоговый счёт: ${gameState.score}`, width * 0.5, y);
-		ctx.fillText(`Лучшая серия: ${gameState.bestStreak}`, width * 0.5, y + lineHeight);
-		ctx.fillText(`Поймано шаров: ${gameState.catchCount}`, width * 0.5, y + lineHeight * 2);
+		ctx.fillText(`Итоговый счёт: ${score.score}`, width * 0.5, y);
+		ctx.fillText(`Лучшая серия: ${score.bestStreak}`, width * 0.5, y + lineHeight);
+		ctx.fillText(`Поймано шаров: ${score.catchCount}`, width * 0.5, y + lineHeight * 2);
 	}
 
 	function drawDebugInfo(): void {
@@ -676,37 +657,29 @@
 	// ════════════════════════════════════════════════
 
 	function startGame(): void {
-		if (!stabilogramState.isWsConnected || !stabilogramState.isDeviceConnected) {
-			alert('Сначала подключите стабилометр!');
+		if (!game) return;
+		if (
+			!stabilogramState.isWsConnected ||
+			!stabilogramState.isDeviceConnected ||
+			!stabilogramStore.isStreamFresh()
+		) {
+			controlMessage =
+				'Для начала игры подключите платформу и дождитесь свежих данных под нагрузкой.';
 			return;
 		}
-
-		console.log('🚀 Starting game with difficulty:', selectedDifficulty);
+		controlMessage = '';
+		completionEmitted = false;
 		game.start(selectedDifficulty);
 		gameStateStore.updateSnapshot(game.getSnapshot());
+		window.dispatchEvent(new CustomEvent('gameStarted', { detail: game.getSnapshot() }));
 	}
 
 	// ✅ ИСПРАВЛЕНИЕ: Улучшенная функция паузы
 	function pauseGame(): void {
-		if (!game) {
-			console.warn('⚠️ Game not initialized, cannot pause');
-			return;
-		}
-
-		console.log('🎮 Pause function called, game state:', {
-			isRunning: game.isRunning,
-			isPaused: game.isPaused
-		});
-
-		if (game.isRunning && !game.isPaused) {
-			game.pause();
-			console.log('⏸️ Game paused');
-		} else if (game.isRunning && game.isPaused) {
-			game.resume();
-			console.log('▶️ Game resumed');
-		} else {
-			console.warn('⚠️ Game not in pausable state');
-		}
+		if (!game?.isRunning) return;
+		// A user can request a manual pause while the transport is also paused.
+		if (game.pauseReason === 'manual') game.resume('manual');
+		else game.pause('manual');
 
 		// Принудительно обновляем стор
 		gameStateStore.updateSnapshot(game.getSnapshot());
@@ -715,15 +688,13 @@
 	function restartGame(): void {
 		if (!game) return;
 
-		console.log('🔄 Restarting game');
-		game.restart();
-		gameStateStore.updateSnapshot(game.getSnapshot());
+		startGame();
 	}
 
 	function stopGame(): void {
 		if (!game) return;
 
-		console.log('🛑 Stopping game');
+		window.dispatchEvent(new CustomEvent('gameStopped', { detail: game.getSnapshot() }));
 		game.stop();
 		gameStateStore.reset();
 	}
@@ -745,7 +716,16 @@
 <!-- ════════════════════════════════════════════════ -->
 
 <div class="ball-catcher-container">
-	<canvas bind:this={canvas} {width} {height} class="game-canvas" />
+	<canvas
+		bind:this={canvas}
+		{width}
+		{height}
+		class="game-canvas"
+		aria-label="Тренировка равновесия «Поймай мяч»"
+	>
+		Поле тренировки. Перемещайте центр давления, чтобы удерживать корзинку на целевом мяче.
+	</canvas>
+	{#if controlMessage}<p class="warning" role="status">{controlMessage}</p>{/if}
 
 	<!-- ✅ Используем проп hideGameControls -->
 	{#if !hideGameControls}
@@ -766,9 +746,9 @@
 					<button
 						class="control-btn primary"
 						on:click={startGame}
-						disabled={!stabilogramState.isDeviceConnected}
+						disabled={!stabilogramState.isWsConnected || !stabilogramState.isDeviceConnected}
 					>
-						🚀 Начать игру
+						Начать игру
 					</button>
 
 					{#if !stabilogramState.isWsConnected}
@@ -809,34 +789,45 @@
 <style>
 	.ball-catcher-container {
 		position: relative;
-		display: inline-block;
+		display: block;
+		width: 100%;
+		min-width: 0;
 	}
 
 	.game-canvas {
+		display: block;
+		width: 100%;
+		height: auto;
+		max-height: 78vh;
+		object-fit: contain;
 		border-radius: 12px;
-		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-		border: 2px solid #2c3e50;
+		box-shadow: 0 4px 16px rgba(15, 23, 42, 0.1);
+		border: 1px solid #dce4ec;
+		box-sizing: border-box;
 		background: #0a0a1a;
 	}
 
 	.game-controls {
-		position: absolute;
-		top: 15px;
-		right: 15px;
 		display: flex;
-		flex-direction: column;
+		flex-wrap: wrap;
 		gap: 12px;
-		max-width: 220px;
+		margin-top: 12px;
 	}
 
 	.menu-panel,
 	.game-panel,
 	.results-panel {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 12px;
+		width: 100%;
 		background: rgba(255, 255, 255, 0.95);
 		backdrop-filter: blur(10px);
 		border-radius: 8px;
-		padding: 20px;
-		box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+		padding: 16px;
+		box-sizing: border-box;
+		border: 1px solid #dce4ec;
 	}
 
 	.menu-panel h3 {
@@ -876,7 +867,7 @@
 		font-weight: 500;
 		cursor: pointer;
 		transition: all 0.2s ease;
-		width: 100%;
+		min-height: 42px;
 	}
 
 	.control-btn:hover:not(:disabled) {
@@ -926,7 +917,7 @@
 		align-items: center;
 		gap: 6px;
 		font-size: 13px;
-		color: rgba(255, 255, 255, 0.8);
+		color: #64748b;
 		cursor: pointer;
 		margin-top: 8px;
 	}

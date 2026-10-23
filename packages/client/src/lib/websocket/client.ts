@@ -1,324 +1,232 @@
-// packages/client/src/lib/websocket/client.ts
-
-import {
-	WEBSOCKET_PORT,
-	WEBSOCKET_HOST,
-	type StabilogramSample,
-	type AxisConfiguration,
-	type CalibrationData,
-	type PortInfo
-} from '@stabilometer/shared';
-
-type StoreType = {
+﻿import { WEBSOCKET_PORT } from '@stabilometer/shared';
+import type { StabilogramSample, CalibrationData, AxisConfiguration } from '@stabilometer/shared';
+type Store = {
 	processSample: (s: StabilogramSample) => void;
-	setCalibration: (d: CalibrationData) => void;
 	setWsConnected: (v: boolean) => void;
 	setDeviceConnected: (v: boolean) => void;
+	setCalibration: (d: CalibrationData | null) => void;
 	setAxisConfig: (c: AxisConfiguration) => void;
+	setConnectionDetails: (demo: boolean, port: string) => void;
 };
-
-class SimpleEventEmitter {
-	private eventHandlers = new Map<string, ((data: unknown) => void)[]>();
-
-	on(event: string, callback: (data: unknown) => void): () => void {
-		if (!this.eventHandlers.has(event)) {
-			this.eventHandlers.set(event, []);
-		}
-		this.eventHandlers.get(event)!.push(callback);
-
+export class StabilogramClient {
+	private ws: WebSocket | null = null;
+	private store: Store | null = null;
+	private handlers = new Map<string, Set<(data: any) => void>>();
+	private retry: ReturnType<typeof setTimeout> | null = null;
+	private attempts = 0;
+	private closed = true;
+	private pending: Promise<void> | null = null;
+	private lastMessage = 0;
+	private total = 0;
+	setStore(store: Store) {
+		this.store = store;
+	}
+	on(event: string, callback: (data: any) => void) {
+		if (!this.handlers.has(event)) this.handlers.set(event, new Set());
+		this.handlers.get(event)!.add(callback);
 		return () => {
-			const handlers = this.eventHandlers.get(event);
-			if (handlers) {
-				const idx = handlers.indexOf(callback);
-				if (idx !== -1) handlers.splice(idx, 1);
-			}
+			this.handlers.get(event)?.delete(callback);
 		};
 	}
-
-	emit(event: string, data: unknown): void {
-		const handlers = this.eventHandlers.get(event);
-		if (handlers) {
-			handlers.forEach((cb) => cb(data));
+	private emit(event: string, data: any) {
+		this.handlers.get(event)?.forEach((callback) => callback(data));
+	}
+	connect(): Promise<void> {
+		if (this.ws?.readyState === WebSocket.OPEN) return Promise.resolve();
+		if (this.pending) return this.pending;
+		this.closed = false;
+		if (this.retry) {
+			clearTimeout(this.retry);
+			this.retry = null;
 		}
-	}
-
-	removeAllListeners(): void {
-		this.eventHandlers.clear();
-	}
-}
-
-export class StabilogramClient extends SimpleEventEmitter {
-	private ws: WebSocket | null = null;
-	private reconnectAttempts = 0;
-	private maxReconnectAttempts = 10;
-	private reconnectInterval = 2000;
-	private intentionallyClosed = false;
-	private store: StoreType | null = null;
-
-	private messageStats = {
-		totalMessages: 0,
-		dataMessages: 0,
-		batchMessages: 0,
-		lastMessageTime: 0,
-		messageRate: 0
-	};
-
-	public listPorts(): void {
-		this.send('LIST_PORTS', {});
-	}
-
-	public connectDevice(portPath: string, baudRate: number, testMode: boolean): void {
-		this.send('CONNECT', { portPath, baudRate, testMode });
-	}
-
-	public disconnectDevice(): void {
-		this.send('DISCONNECT', {});
-	}
-
-	public calibrateZero(): void {
-		this.send('CALIBRATE_ZERO', {});
-	}
-
-	public configureAxes(config: AxisConfiguration): void {
-		this.send('CONFIGURE_AXES', config as unknown as Record<string, unknown>);
-	}
-
-	public getPerformanceStats() {
-		const now = performance.now();
-		if (now - this.messageStats.lastMessageTime < 1000) {
-			this.messageStats.messageRate = this.messageStats.totalMessages;
-		}
-		return { ...this.messageStats };
-	}
-
-	setStore(store: any): void {
-		this.store = store;
-		console.log('🔗 WebSocket client connected to store');
-	}
-
-	async connect(): Promise<void> {
-		this.intentionallyClosed = false;
-
-		return new Promise((resolve, reject) => {
-			try {
-				const url = `ws://${WEBSOCKET_HOST}:${WEBSOCKET_PORT}`;
-				console.log(`🔗 Connecting to ${url}...`);
-				this.ws = new WebSocket(url);
-
-				this.ws.onopen = () => {
-					console.log('✅ WebSocket connected');
-					this.reconnectAttempts = 0;
-					this.store?.setWsConnected(true);
-					resolve();
-				};
-
-				this.ws.onmessage = (event) => {
-					this.handleMessage(event.data);
-				};
-
-				this.ws.onclose = (event) => {
-					console.log('❌ WebSocket closed:', event.code, event.reason);
-					this.store?.setWsConnected(false);
-					this.store?.setDeviceConnected(false);
-
-					if (!this.intentionallyClosed) {
-						this.scheduleReconnect();
-					}
-				};
-
-				this.ws.onerror = (error) => {
-					console.error('❌ WebSocket error:', error);
-					reject(error);
-				};
-			} catch (error) {
-				reject(error);
-			}
+		this.pending = new Promise<void>((resolve, reject) => {
+			const ws = new WebSocket(`ws://127.0.0.1:${WEBSOCKET_PORT}`);
+			this.ws = ws;
+			ws.onopen = () => {
+				if (this.ws !== ws) return;
+				this.attempts = 0;
+				this.store?.setWsConnected(true);
+				this.emit('WS_CONNECTED', {});
+				resolve();
+			};
+			ws.onmessage = (event) => {
+				if (this.ws === ws) this.handleMessage(event.data);
+			};
+			ws.onerror = () =>
+				reject(new Error('Нет связи с локальным сервером. Запустите приложение через START.'));
+			ws.onclose = () => {
+				if (this.ws !== ws) return;
+				this.ws = null;
+				this.pending = null;
+				this.store?.setWsConnected(false);
+				this.emit('WS_DISCONNECTED', {});
+				reject(new Error('Соединение закрыто'));
+				if (!this.closed) {
+					const delay = Math.min(1000 * 2 ** this.attempts++, 15000);
+					this.retry = setTimeout(() => {
+						this.retry = null;
+						void this.connect().catch(() => {});
+					}, delay);
+				}
+			};
 		});
+		const promise = this.pending;
+		void promise
+			.finally(() => {
+				if (this.pending === promise) this.pending = null;
+			})
+			.catch(() => {});
+		return promise;
 	}
-
-	disconnect(): void {
-		console.log('🔌 Disconnecting WebSocket...');
-		this.intentionallyClosed = true;
-
-		if (this.ws) {
-			this.ws.close(1000, 'Client disconnect');
-			this.ws = null;
-		}
-
+	disconnect() {
+		this.closed = true;
+		if (this.retry) clearTimeout(this.retry);
+		this.retry = null;
+		this.ws?.close();
+		this.ws = null;
+		this.pending = null;
 		this.store?.setWsConnected(false);
-		this.store?.setDeviceConnected(false);
 	}
-
-	private scheduleReconnect(): void {
-		if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-			console.error(`❌ Max reconnect attempts (${this.maxReconnectAttempts}) reached`);
+	private acceptSample(value: any, received: number, offset: number) {
+		if (
+			!value ||
+			!value.sensors ||
+			!value.centered ||
+			!value.mm ||
+			!value.raw ||
+			!value.filtered ||
+			!Number.isFinite(value.deviceTime) ||
+			!Number.isFinite(value.packetNumber) ||
+			![
+				value.mm.x,
+				value.mm.y,
+				value.raw.x,
+				value.raw.y,
+				value.raw.z,
+				value.raw.f,
+				value.centered.x,
+				value.centered.y,
+				value.centered.z,
+				value.centered.f,
+				value.filtered.x,
+				value.filtered.y,
+				value.filtered.z,
+				value.filtered.f,
+				value.sensors.d1,
+				value.sensors.d2,
+				value.sensors.d3,
+				value.sensors.d4
+			].every(Number.isFinite)
+		) {
+			this.emit('ERROR', { error: 'Получен некорректный пакет измерений' });
 			return;
 		}
-
-		this.reconnectAttempts++;
-		const delay = Math.min(this.reconnectInterval * this.reconnectAttempts, 30000);
-
-		console.log(`🔄 Reconnect attempt ${this.reconnectAttempts} in ${delay}ms...`);
-
-		setTimeout(() => {
-			if (!this.intentionallyClosed) {
-				this.connect().catch(console.error);
-			}
-		}, delay);
+		const sample = { ...value, clientTime: received - offset } as StabilogramSample;
+		this.store?.processSample(sample);
 	}
-
-	private handleMessage(data: string): void {
+	private handleMessage(data: string) {
 		try {
 			const msg = JSON.parse(data);
-			if (!msg.type) return;
-
-			this.messageStats.totalMessages++;
-			this.messageStats.lastMessageTime = performance.now();
-
+			if (!msg || typeof msg.type !== 'string') return;
+			this.total++;
+			this.lastMessage = performance.now();
 			switch (msg.type) {
 				case 'DATA':
-					this.messageStats.dataMessages++;
-					if (msg.data) {
-						const sample = {
-							...msg.data,
-							clientTime: performance.now()
-						} as StabilogramSample;
-						this.store?.processSample(sample);
+					this.acceptSample(msg.data, this.lastMessage, 0);
+					break;
+				case 'DATA_BATCH': {
+					if (!Array.isArray(msg.data) || !msg.data.length) break;
+					const last = msg.data[msg.data.length - 1];
+					const deviceClock = msg.data.every(
+						(s: any, i: number) =>
+							s &&
+							Number.isFinite(s.deviceTime) &&
+							(i === 0 || s.deviceTime > msg.data[i - 1].deviceTime)
+					);
+					for (const sample of msg.data) {
+						const latest = deviceClock ? last.deviceTime : (last.serverTime ?? last.clientTime),
+							timestamp = deviceClock
+								? sample.deviceTime
+								: (sample.serverTime ?? sample.clientTime);
+						const offset =
+							Number.isFinite(latest) && Number.isFinite(timestamp)
+								? Math.max(0, latest - timestamp)
+								: 0;
+						this.acceptSample(sample, this.lastMessage, offset);
 					}
 					break;
-
-				// ✅ ИСПРАВЛЕНО: Идеальное распределение времени для пачки
-				case 'DATA_BATCH':
-					this.messageStats.batchMessages++;
-
-					if (msg.data && Array.isArray(msg.data)) {
-						const batchReceiveTime = performance.now();
-						const count = msg.data.length;
-
-						// ✅ ИСПРАВЛЕНО: Используем РЕАЛЬНОЕ время из последнего пакета
-						// Предполагаем, что batch был отправлен сразу после последнего пакета
-						const lastSampleData = msg.data[count - 1];
-
-						// Если в пакете есть deviceTime, используем его для вычисления offset'а
-						let baseClientTime = batchReceiveTime;
-
-						for (let i = 0; i < count; i++) {
-							const sampleData = msg.data[i];
-
-							// ✅ НОВАЯ СТРАТЕГИЯ: Равномерно распределяем пакеты
-							// в интервале [batchReceiveTime - estimatedBatchDuration, batchReceiveTime]
-							const estimatedPacketInterval = 20; // 50Hz = 20ms между пакетами
-							const estimatedBatchDuration = (count - 1) * estimatedPacketInterval;
-
-							// Пакеты идут "назад во времени" от момента получения batch'а
-							const packetOffset = (count - 1 - i) * estimatedPacketInterval;
-							const clientTime = batchReceiveTime - packetOffset;
-
-							const sample = {
-								...sampleData,
-								clientTime: clientTime
-							} as StabilogramSample;
-
-							this.store?.processSample(sample);
-						}
-
-						// ✅ ДИАГНОСТИКА
-						if (count > 1) {
-							console.log(
-								`📦 Batch processed: ${count} packets over ~${((count - 1) * 20).toFixed(0)}ms`
-							);
-						}
-					}
-					break;
-
-				case 'PORTS_LIST':
-					this.emit('PORTS_LIST', { ports: msg.ports || [] });
-					break;
-
-				case 'SERIAL_CONNECTED':
-					this.store?.setDeviceConnected(true);
-					this.emit('SERIAL_CONNECTED', msg);
-					break;
-
-				case 'SERIAL_DISCONNECTED':
-					this.store?.setDeviceConnected(false);
-					this.emit('SERIAL_DISCONNECTED', null);
-					break;
-
+				}
 				case 'CONNECTED':
+					this.store?.setConnectionDetails(!!msg.testMode, msg.port ?? '');
 					this.store?.setDeviceConnected(!!msg.serialConnected);
-					if (msg.calibrated && msg.calibration) {
-						this.store?.setCalibration(msg.calibration);
-					}
-					if (msg.axisConfig) {
-						this.store?.setAxisConfig(msg.axisConfig);
-					}
+					this.store?.setCalibration(msg.calibrated && msg.calibration ? msg.calibration : null);
+					if (msg.axisConfig) this.store?.setAxisConfig(msg.axisConfig);
 					this.emit('CONNECTED', msg);
 					break;
-
-				case 'CALIBRATION_STARTED':
-					this.emit('CALIBRATION_STARTED', null);
+				case 'SERIAL_CONNECTED':
+					this.store?.setConnectionDetails(!!msg.testMode, msg.port ?? '');
+					this.store?.setDeviceConnected(true);
+					this.store?.setCalibration(msg.calibrated && msg.calibration ? msg.calibration : null);
+					this.emit(msg.type, msg);
 					break;
-
-				case 'CALIBRATION_PROGRESS':
-					this.emit('CALIBRATION_PROGRESS', {
-						progress: msg.progress || 0,
-						total: msg.total || 200
-					});
+				case 'SERIAL_DISCONNECTED':
+					this.store?.setDeviceConnected(false);
+					this.emit(msg.type, msg);
 					break;
-
 				case 'CALIBRATION_COMPLETE':
-					if (msg.calibration) {
-						this.store?.setCalibration(msg.calibration);
-					}
-					this.emit('CALIBRATION_COMPLETE', msg.calibration);
+					this.store?.setCalibration(msg.calibration);
+					this.emit(msg.type, msg.calibration);
 					break;
-
-				case 'ERROR':
-					this.emit('ERROR', { error: msg.error });
+				case 'AXES_CONFIGURED':
+					this.store?.setAxisConfig(msg.config);
+					this.emit(msg.type, msg.config);
 					break;
-
-				case 'PERFORMANCE_STATS':
-					this.emit('PERFORMANCE_STATS', msg.stats);
+				case 'PORTS_LIST':
+					this.emit(msg.type, { ports: msg.ports ?? [] });
 					break;
-
-				case 'PERFORMANCE_UPDATED':
-					this.emit('PERFORMANCE_UPDATED', msg.settings);
-					break;
+				default:
+					this.emit(msg.type, msg);
 			}
-		} catch (error) {
-			console.error('❌ Message parse error:', error);
+		} catch {
+			this.emit('ERROR', { error: 'Не удалось прочитать сообщение сервера' });
 		}
 	}
-
-	private send(type: string, payload: any = {}): void {
-		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-		try {
-			this.ws.send(JSON.stringify({ type, ...payload }));
-		} catch (error) {
-			console.error('❌ Send error:', error);
+	private send(type: string, payload: Record<string, unknown> = {}) {
+		if (!this.getConnectionState()) {
+			this.emit('ERROR', { error: 'Сначала подключитесь к серверу' });
+			return;
 		}
+		this.ws!.send(JSON.stringify({ type, ...payload }));
 	}
-
-	getConnectionState(): boolean {
+	listPorts() {
+		this.send('LIST_PORTS');
+	}
+	connectDevice(portPath: string, baudRate = 115200, testMode = false) {
+		this.send('CONNECT', { portPath, baudRate, testMode });
+	}
+	disconnectDevice() {
+		this.send('DISCONNECT');
+	}
+	calibrateZero() {
+		this.send('CALIBRATE_ZERO');
+	}
+	configureAxes(config: AxisConfiguration) {
+		this.send('CONFIGURE_AXES', { ...config });
+	}
+	getConnectionState() {
 		return this.ws?.readyState === WebSocket.OPEN;
 	}
-
-	getReadyState(): number {
-		return this.ws?.readyState ?? WebSocket.CLOSED;
+	getReadyState() {
+		return this.ws?.readyState ?? 3;
 	}
-
-	getReconnectAttempts(): number {
-		return this.reconnectAttempts;
+	getReconnectAttempts() {
+		return this.attempts;
 	}
-
-	clearAllEventHandlers(): void {
-		this.removeAllListeners();
+	getPerformanceStats() {
+		return { totalMessages: this.total, lastMessageTime: this.lastMessage };
+	}
+	clearAllEventHandlers() {
+		this.handlers.clear();
 	}
 }
-
 export const wsClient = new StabilogramClient();
-
-if (typeof window !== 'undefined') {
-	(window as any).wsClient = wsClient;
-}

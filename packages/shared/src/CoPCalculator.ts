@@ -4,8 +4,8 @@ import type { SensorData, Coordinates, CalibrationData } from './types.js';
 import { SENSOR_DISTANCE, PLATFORM_SIZE } from './constants.js';
 
 /**
- * Калькулятор центра давления (Center of Pressure) v2.4+ 
- * 
+ * Калькулятор центра давления (Center of Pressure) v2.4+
+ *
  * ✅ КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ:
  * - Убрано динамическое масштабирование (уничтожало точность)
  * - Правильная обработка отрицательных значений после вычитания offset'ов
@@ -17,42 +17,52 @@ export class CoPCalculator {
   private sensorDistanceY: number;
   private offsets: SensorData = { d1: 0, d2: 0, d3: 0, d4: 0 };
   private isCalibrated: boolean = false;
-  
+
   // ✅ ИСПРАВЛЕНО: Фиксированный масштаб вместо динамического
-  private readonly FORCE_SCALE = 0.001;  // Перевод единиц датчика в "условные единицы силы"
-  private readonly MIN_TOTAL_FORCE = 10; // Минимальная сила для валидного CoP (в scaled единицах)
-  private readonly MAX_COORD = 150;
-  
+  private readonly FORCE_SCALE = 0.001; // Перевод единиц датчика в "условные единицы силы"
+  private readonly MIN_TOTAL_FORCE = 0.1; // Условные единицы, порог требует аппаратной проверки
+
   private sampleCount = 0;
   private forceHistory: number[] = [];
   private problemCounter = 0;
 
-  constructor(options: {
-    sensorDistanceX?: number;
-    sensorDistanceY?: number;
-  } = {}) {
+  constructor(
+    options: {
+      sensorDistanceX?: number;
+      sensorDistanceY?: number;
+    } = {},
+  ) {
     this.sensorDistanceX = options.sensorDistanceX ?? SENSOR_DISTANCE.x;
     this.sensorDistanceY = options.sensorDistanceY ?? SENSOR_DISTANCE.y;
+    if (
+      ![this.sensorDistanceX, this.sensorDistanceY].every(
+        (value) => Number.isFinite(value) && value > 0,
+      )
+    ) {
+      throw new Error('Invalid sensor distance');
+    }
     console.log('🎯 CoPCalculator v2.4+ created (stable math):', {
       sensorDistanceX: this.sensorDistanceX,
-      sensorDistanceY: this.sensorDistanceY
+      sensorDistanceY: this.sensorDistanceY,
     });
   }
 
   setOffsets(offsets: SensorData): void {
+    if (!Object.values(offsets).every(Number.isFinite))
+      throw new Error('Non-finite sensor offsets');
     this.offsets = { ...offsets };
     this.isCalibrated = true;
-    
+
     // ✅ УБРАНО: Динамическое масштабирование и проверка на несбалансированность
     console.log('✅ Калибровка установлена v2.4+:', {
       offsets: {
         d1: offsets.d1.toFixed(0),
         d2: offsets.d2.toFixed(0),
         d3: offsets.d3.toFixed(0),
-        d4: offsets.d4.toFixed(0)
+        d4: offsets.d4.toFixed(0),
       },
       forceScale: this.FORCE_SCALE,
-      minTotalForce: this.MIN_TOTAL_FORCE
+      minTotalForce: this.MIN_TOTAL_FORCE,
     });
   }
 
@@ -64,8 +74,8 @@ export class CoPCalculator {
     return this.isCalibrated;
   }
 
- calculate(sensors: SensorData): Coordinates {
-    if (!this.isCalibrated) {
+  calculate(sensors: SensorData): Coordinates {
+    if (!this.isCalibrated || !Object.values(sensors).every(Number.isFinite)) {
       return { x: 0, y: 0, z: 0, f: 0 };
     }
 
@@ -80,15 +90,17 @@ export class CoPCalculator {
 
     // ✅ ШАГ 3: Общая сила теперь — это сумма чистых положительных давлений
     const totalForce = d1 + d2 + d3 + d4;
-    
+
     // ✅ ШАГ 4: Снижаем порог до минимума, так как мы уже убрали отрицательный шум
-    if (totalForce < 0.1) { 
+    if (totalForce < this.MIN_TOTAL_FORCE) {
       return { x: 0, y: 0, z: 0, f: totalForce };
     }
 
     // ✅ ШАГ 5: Вычисляем CoP (теперь числитель и знаменатель согласованы)
-    const xRaw = (this.sensorDistanceX / 2) * ((d2 + d3) - (d1 + d4)) / totalForce;
-    const yRaw = (this.sensorDistanceY / 2) * ((d1 + d2) - (d3 + d4)) / totalForce;
+    const xRaw =
+      ((this.sensorDistanceX / 2) * (d2 + d3 - (d1 + d4))) / totalForce;
+    const yRaw =
+      ((this.sensorDistanceY / 2) * (d1 + d2 - (d3 + d4))) / totalForce;
 
     // ШАГ 6: Проверка на валидность чисел
     if (!isFinite(xRaw) || !isFinite(yRaw)) {
@@ -96,8 +108,14 @@ export class CoPCalculator {
     }
 
     // ШАГ 7: Ограничение
-    const x = Math.max(-this.MAX_COORD, Math.min(this.MAX_COORD, xRaw));
-    const y = Math.max(-this.MAX_COORD, Math.min(this.MAX_COORD, yRaw));
+    const x = Math.max(
+      -this.sensorDistanceX / 2,
+      Math.min(this.sensorDistanceX / 2, xRaw),
+    );
+    const y = Math.max(
+      -this.sensorDistanceY / 2,
+      Math.min(this.sensorDistanceY / 2, yRaw),
+    );
 
     this.updateForceStatistics(totalForce);
 
@@ -115,11 +133,17 @@ export class CoPCalculator {
     }
   }
 
-  private logDiagnostics(sensors: SensorData, result: { x: number; y: number }, totalForce: number): void {
-    const avgForce = this.forceHistory.length > 0
-      ? this.forceHistory.reduce((a, b) => a + b, 0) / this.forceHistory.length
-      : 0;
-      
+  private logDiagnostics(
+    sensors: SensorData,
+    result: { x: number; y: number },
+    totalForce: number,
+  ): void {
+    const avgForce =
+      this.forceHistory.length > 0
+        ? this.forceHistory.reduce((a, b) => a + b, 0) /
+          this.forceHistory.length
+        : 0;
+
     console.log('🔍 CoP Диагностика v2.4+:', {
       sampleCount: this.sampleCount,
       problemCount: this.problemCounter,
@@ -128,14 +152,14 @@ export class CoPCalculator {
         avg: avgForce.toFixed(3),
         min: Math.min(...this.forceHistory).toFixed(3),
         max: Math.max(...this.forceHistory).toFixed(3),
-        samples: this.forceHistory.length
+        samples: this.forceHistory.length,
       },
       result: [result.x.toFixed(1), result.y.toFixed(1)],
       settings: {
         forceScale: this.FORCE_SCALE,
         minTotalForce: this.MIN_TOTAL_FORCE,
-        maxCoord: this.MAX_COORD
-      }
+        sensorDistance: { x: this.sensorDistanceX, y: this.sensorDistanceY },
+      },
     });
   }
 
@@ -152,15 +176,19 @@ export class CoPCalculator {
     sensorDistanceX?: number;
     sensorDistanceY?: number;
   }): void {
+    for (const value of [options.sensorDistanceX, options.sensorDistanceY]) {
+      if (value !== undefined && (!Number.isFinite(value) || value <= 0))
+        throw new Error('Invalid sensor distance');
+    }
     if (options.sensorDistanceX !== undefined) {
       this.sensorDistanceX = options.sensorDistanceX;
     }
     if (options.sensorDistanceY !== undefined) {
       this.sensorDistanceY = options.sensorDistanceY;
     }
-    console.log('🔧 Параметры CoPCalculator v2.4+ обновлены:', { 
-      sensorDistanceX: this.sensorDistanceX, 
-      sensorDistanceY: this.sensorDistanceY 
+    console.log('🔧 Параметры CoPCalculator v2.4+ обновлены:', {
+      sensorDistanceX: this.sensorDistanceX,
+      sensorDistanceY: this.sensorDistanceY,
     });
   }
 
@@ -171,16 +199,18 @@ export class CoPCalculator {
     avgForce: number;
     isCalibrated: boolean;
   } {
-    const avgForce = this.forceHistory.length > 0
-      ? this.forceHistory.reduce((a, b) => a + b, 0) / this.forceHistory.length
-      : 0;
+    const avgForce =
+      this.forceHistory.length > 0
+        ? this.forceHistory.reduce((a, b) => a + b, 0) /
+          this.forceHistory.length
+        : 0;
 
     return {
       sampleCount: this.sampleCount,
       problemCount: this.problemCounter,
       forceHistorySize: this.forceHistory.length,
       avgForce,
-      isCalibrated: this.isCalibrated
+      isCalibrated: this.isCalibrated,
     };
   }
 }

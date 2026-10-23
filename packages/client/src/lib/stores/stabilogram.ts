@@ -1,277 +1,180 @@
-// packages/client/src/lib/stores/stabilogram.ts
-
-import { writable, derived, get } from 'svelte/store';
-import {
-  TypedRingBuffer,
-  type StabilogramSample,
-  type CalibrationData,
-  type AxisConfiguration,
-  type Vector2D
+﻿import { writable, derived } from 'svelte/store';
+import { TypedRingBuffer } from '@stabilometer/shared';
+import type {
+	StabilogramSample,
+	CalibrationData,
+	AxisConfiguration,
+	Vector2D
 } from '@stabilometer/shared';
 import { KalmanFilter2D } from '../filters/KalmanFilter';
 import { PositionInterpolator } from '../rendering/PositionInterpolator';
 
-const DEFAULT_CONFIG = {
-  filterType: 'kalman',
-  interpolationEnabled: true,
-  maxSampleHistory: 500
-} as const;
-
-const ZERO_VELOCITY: Vector2D = { x: 0, y: 0 };
-
-interface StabilogramState {
-  isWsConnected: boolean;
-  isDeviceConnected: boolean;
-  isCalibrated: boolean;
-  currentSample: StabilogramSample | null;
-  filteredPosition: Vector2D;
-  interpolatedPosition: Vector2D;
-  velocity: Vector2D;
-  scale: number;
-  fps: number;
-  latency: number;
-  packetRate: number;
-}
-
 function createStabilogramStore() {
-  let kalmanFilter: KalmanFilter2D | null = null;
-  let interpolator: PositionInterpolator | null = null;
-  let sampleHistory: TypedRingBuffer<StabilogramSample> | null = null;
-
-  let lastPacketTime = 0;
-  let packetTimes: number[] = [];
-
-  let isInitialized = false;
-  let isGameModeInitialized = false;
-
-  const state = writable<StabilogramState>({
-    isWsConnected: false,
-    isDeviceConnected: false,
-    isCalibrated: false,
-    currentSample: null,
-    filteredPosition: { x: 0, y: 0 },
-    interpolatedPosition: { x: 0, y: 0 },
-    velocity: { x: 0, y: 0 },
-    scale: 5,
-    fps: 0,
-    latency: 0,
-    packetRate: 0
-  });
-
-  const calibrationStore = writable<CalibrationData | null>(null);
-  const axisConfigStore = writable<AxisConfiguration>({
-    swapXY: false,
-    invertX: false,
-    invertY: false,
-    rotationDeg: 0
-  });
-
-  function initialize(viewportSize: Vector2D): void {
-    if (isInitialized) return;
-
-    // ✅ ИНИЦИАЛИЗАЦИЯ с настройками для плавных движений
-    kalmanFilter = new KalmanFilter2D({ 
-      processNoise: 0.15, 
-      measurementNoise: 1.2,
-      verboseLogging: false  // Отключаем verbose для производительности
-    });
-    
-    interpolator = new PositionInterpolator();
-    
-    // Настраиваем интерполятор для плавных движений
-    interpolator.setModeForGentleMovements();
-    
-    sampleHistory = new TypedRingBuffer<StabilogramSample>(DEFAULT_CONFIG.maxSampleHistory);
-    
-    isInitialized = true;
-    console.log('✅ Stabilogram store v2.3+ initialized (optimized for gentle movements)');
-  }
-
-  function initializeGameMode(viewportSize: Vector2D): void {
-    if (!isInitialized) initialize(viewportSize);
-    if (isGameModeInitialized) return;
-
-    kalmanFilter?.reset();
-    interpolator?.reset();
-    
-    // Переключаем на режим резких движений для игры
-    kalmanFilter?.setModeForSharpMovements();
-    interpolator?.setModeForSharpMovements();
-
-    isGameModeInitialized = true;
-    console.log('🎮 Game mode initialized with sharp movement optimization');
-  }
-
-  function resetGameMode(): void {
-    isGameModeInitialized = false;
-    
-    // Возвращаем настройки для плавных движений
-    kalmanFilter?.setModeForGentleMovements(); 
-    interpolator?.setModeForGentleMovements();
-    
-    console.log('🏥 Returned to gentle movement mode');
-  }
-
-  function processSample(sample: StabilogramSample): void {
-    if (!isInitialized) {
-      initialize({ x: 800, y: 600 });
-    }
-
-    const validTime = sample.clientTime || performance.now();
-    const currentRenderTime = performance.now();
-
-    packetTimes.push(validTime);
-    packetTimes = packetTimes.filter(t => currentRenderTime - t < 1000);
-    
-    sampleHistory?.push(sample);
-
-    let filteredPosition = sample.mm;
-    if (kalmanFilter) {
-      const dt = lastPacketTime > 0 ? (validTime - lastPacketTime) / 1000 : 0.02;
-      const res = kalmanFilter.update(sample.mm.x, sample.mm.y, dt);
-      filteredPosition = { x: res.x, y: res.y };
-    }
-
-    let interpolatedPosition = filteredPosition;
-    if (interpolator) {
-      interpolator.addSample(filteredPosition, validTime);
-      interpolatedPosition = interpolator.getInterpolatedPosition(currentRenderTime);
-    }
-
-    // ✅ ДИАГНОСТИКА ВНУТРИ СТОРА (только при больших скачках)
-    const inputDistance = Math.sqrt(sample.mm.x ** 2 + sample.mm.y ** 2);
-    const kalmanDistance = Math.sqrt(filteredPosition.x ** 2 + filteredPosition.y ** 2);
-    const finalDistance = Math.sqrt(interpolatedPosition.x ** 2 + interpolatedPosition.y ** 2);
-    
-    const kalmanJump = Math.abs(inputDistance - kalmanDistance);
-    const interpolatorJump = Math.abs(kalmanDistance - finalDistance);
-    
-    if (kalmanJump > 30 || interpolatorJump > 30) {
-      console.warn('🔧 CLIENT FILTER JUMP v2.3+:', {
-        input: inputDistance.toFixed(1) + 'mm',
-        afterKalman: kalmanDistance.toFixed(1) + 'mm', 
-        afterInterpolator: finalDistance.toFixed(1) + 'mm',
-        kalmanJump: kalmanJump.toFixed(1) + 'mm',
-        interpolatorJump: interpolatorJump.toFixed(1) + 'mm',
-        dt: lastPacketTime > 0 ? ((validTime - lastPacketTime)).toFixed(1) + 'ms' : 'N/A'
-      });
-    }
-
-    const velocity = interpolator?.getVelocity() ?? { x: 0, y: 0 };
-    const latency = currentRenderTime - validTime;
-    
-    lastPacketTime = validTime;
-
-    state.update(s => ({
-      ...s,
-      currentSample: sample,
-      filteredPosition,
-      interpolatedPosition,
-      velocity,
-      latency,
-      packetRate: packetTimes.length
-    }));
-  }
-
-  function getSampleHistory(count: number = 100): StabilogramSample[] {
-    if (!sampleHistory) return [];
-    const result: StabilogramSample[] = [];
-    const maxCount = Math.min(count, sampleHistory.length);
-    for (let i = 0; i < maxCount; i++) {
-      const sample = sampleHistory.peek(sampleHistory.length - 1 - i);
-      if (sample) result.unshift(sample);
-    }
-    return result;
-  }
-
-  function getRenderPosition(): Vector2D {
-    if (interpolator) {
-      return interpolator.getInterpolatedPosition();
-    }
-    return get(state).filteredPosition;
-  }
-
-  function getRenderVelocity(): Vector2D {
-    if (interpolator) return interpolator.getVelocity();
-    return ZERO_VELOCITY;
-  }
-
-  // ✅ НОВЫЙ МЕТОД: Диагностика интерполятора
-  function getInterpolatorDebug() {
-    return interpolator?.getDebugInfo() || null;
-  }
-
-  function setCalibration(data: CalibrationData): void {
-    calibrationStore.set(data);
-    state.update(s => ({ ...s, isCalibrated: true }));
-  }
-
-  function setAxisConfig(newConfig: AxisConfiguration): void {
-    axisConfigStore.set(newConfig);
-  }
-
-  function setWsConnected(connected: boolean): void {
-    state.update(s => ({ 
-      ...s, 
-      isWsConnected: connected,
-      isDeviceConnected: connected ? s.isDeviceConnected : false 
-    }));
-  }
-
-  function setDeviceConnected(connected: boolean): void {
-    state.update(s => ({ ...s, isDeviceConnected: connected }));
-    if (!connected) {
-      kalmanFilter?.reset();
-      interpolator?.reset();
-      sampleHistory?.clear();
-    }
-  }
-
-  function updateFps(fps: number): void {
-    state.update(s => ({ ...s, fps }));
-  }
-
-  function setScale(scale: number): void {
-    state.update(s => ({ ...s, scale: Math.max(1, Math.min(20, scale)) }));
-  }
-
-  return {
-    subscribe: state.subscribe,
-    initialize,
-    initializeGameMode,
-    resetGameMode,
-    processSample,
-    getSampleHistory,
-    getRenderPosition,
-    getRenderVelocity,
-    getInterpolatorDebug, // ✅ НОВОЕ
-    setCalibration,
-    setAxisConfig,
-    setWsConnected,
-    setDeviceConnected,
-    updateFps,
-    setScale,
-    calibration: { subscribe: calibrationStore.subscribe },
-    axisConfig: { subscribe: axisConfigStore.subscribe },
-    isReady: derived(state, s => s.isDeviceConnected && s.isCalibrated),
-    position: derived(state, s => s.interpolatedPosition),
-    
-    get isGameModeInitialized() { return isGameModeInitialized; },
-    get isInitialized() { return isInitialized; },
-    get sampleCount() { return sampleHistory?.length ?? 0; }
-  };
+	const state = writable({
+		isWsConnected: false,
+		isDeviceConnected: false,
+		isCalibrated: false,
+		demo: false,
+		port: '',
+		currentSample: null as StabilogramSample | null,
+		filteredPosition: { x: 0, y: 0 },
+		interpolatedPosition: { x: 0, y: 0 },
+		velocity: { x: 0, y: 0 },
+		scale: 3,
+		fps: 0,
+		latency: 0,
+		packetRate: 0
+	});
+	const calibration = writable<CalibrationData | null>(null);
+	const axisConfig = writable<AxisConfiguration>({
+		swapXY: true,
+		invertX: false,
+		invertY: false,
+		rotationDeg: 0
+	});
+	const history = new TypedRingBuffer<StabilogramSample>(500);
+	const listeners = new Set<(sample: StabilogramSample) => void>();
+	const kalman = new KalmanFilter2D({
+		processNoise: 400,
+		measurementNoise: 1.2,
+		verboseLogging: false
+	});
+	const interpolator = new PositionInterpolator();
+	let lastTime = 0,
+		receivedTime = -Infinity,
+		lastNotify = -Infinity;
+	let deviceConnected = false,
+		validInput = false,
+		gameMode = false;
+	const times = new Float64Array(1024);
+	let head = 0,
+		count = 0;
+	const position = { x: 0, y: 0 };
+	function resetMotion() {
+		kalman.reset();
+		interpolator.reset();
+		history.clear();
+		lastTime = 0;
+		receivedTime = -Infinity;
+		validInput = false;
+		head = 0;
+		count = 0;
+	}
+	function processSample(sample: StabilogramSample) {
+		const now = performance.now();
+		receivedTime = now;
+		validInput =
+			sample.isValid !== false && Number.isFinite(sample.mm.x) && Number.isFinite(sample.mm.y);
+		history.push(sample);
+		for (const listener of listeners) listener(sample);
+		times[head] = now;
+		head = (head + 1) % times.length;
+		count = Math.min(count + 1, times.length);
+		if (validInput) {
+			const dt = lastTime ? (sample.clientTime - lastTime) / 1000 : 0.02;
+			if (dt < 0 || dt > 0.5) kalman.reset();
+			const filtered = kalman.update(sample.mm.x, sample.mm.y, Math.max(0.001, Math.min(0.5, dt)));
+			position.x = filtered.x;
+			position.y = filtered.y;
+			interpolator.addSample(position, sample.clientTime, now);
+		}
+		lastTime = sample.clientTime;
+		if (now - lastNotify >= 100) {
+			let rate = 0;
+			for (let i = 0; i < count; i++)
+				if (now - times[(head - 1 - i + times.length) % times.length] <= 1000) rate++;
+			state.update((s) => ({
+				...s,
+				currentSample: sample,
+				packetRate: rate,
+				latency: Math.max(0, now - sample.clientTime)
+			}));
+			lastNotify = now;
+		}
+	}
+	function setDeviceConnected(connected: boolean) {
+		deviceConnected = connected;
+		resetMotion();
+		state.update((s) => ({
+			...s,
+			isDeviceConnected: connected,
+			currentSample: null,
+			packetRate: 0
+		}));
+	}
+	function setWsConnected(connected: boolean) {
+		if (!connected) setDeviceConnected(false);
+		state.update((s) => ({ ...s, isWsConnected: connected }));
+	}
+	function setCalibration(data: CalibrationData | null) {
+		calibration.set(data);
+		resetMotion();
+		state.update((s) => ({ ...s, isCalibrated: !!data?.isValid }));
+	}
+	return {
+		subscribe: state.subscribe,
+		processSample,
+		initialize: (_viewport: Vector2D) => {},
+		initializeGameMode: (_viewport: Vector2D) => {
+			resetMotion();
+			gameMode = true;
+			kalman.setModeForSharpMovements();
+			interpolator.setModeForSharpMovements();
+		},
+		resetGameMode: () => {
+			gameMode = false;
+			kalman.setModeForGentleMovements();
+			interpolator.setModeForGentleMovements();
+		},
+		getRenderPosition: () => interpolator.getInterpolatedPosition(),
+		getRenderVelocity: () => interpolator.getVelocity(),
+		isStreamFresh: (now = performance.now()) =>
+			deviceConnected && validInput && now - receivedTime <= 500,
+		getInterpolatorDebug: () => interpolator.getDebugInfo(),
+		getSampleHistory: (n = 100) => {
+			const out: StabilogramSample[] = [];
+			for (let i = Math.max(0, history.length - n); i < history.length; i++) {
+				const s = history.peek(i);
+				if (s) out.push(s);
+			}
+			return out;
+		},
+		observeSamples: (listener: (s: StabilogramSample) => void) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		setWsConnected,
+		setDeviceConnected,
+		setCalibration,
+		setConnectionDetails: (demo: boolean, port: string) =>
+			state.update((s) => ({ ...s, demo, port })),
+		setAxisConfig: (config: AxisConfiguration) => {
+			axisConfig.set(config);
+			resetMotion();
+		},
+		updateFps: (fps: number) => state.update((s) => ({ ...s, fps })),
+		setScale: (scale: number) =>
+			state.update((s) => ({ ...s, scale: Math.max(0.5, Math.min(10, scale)) })),
+		calibration: { subscribe: calibration.subscribe },
+		axisConfig: { subscribe: axisConfig.subscribe },
+		isReady: derived(state, (s) => s.isDeviceConnected && (s.isCalibrated || s.demo)),
+		position: derived(state, (s) => s.interpolatedPosition),
+		get isInitialized() {
+			return true;
+		},
+		get isGameModeInitialized() {
+			return gameMode;
+		},
+		get sampleCount() {
+			return history.length;
+		}
+	};
 }
-
 export const stabilogramStore = createStabilogramStore();
-
-if (typeof window !== 'undefined') {
-  (window as any).stabilogramStore = stabilogramStore;
-}
-
-export const currentPosition = derived(stabilogramStore, state => state.interpolatedPosition);
-export const isStabilogramReady = derived(stabilogramStore, state => state.isDeviceConnected && state.isCalibrated);
-export const connectionStatus = derived(stabilogramStore, state => ({
-  ws: state.isWsConnected,
-  device: state.isDeviceConnected,
-  calibrated: state.isCalibrated
+export const currentPosition = derived(stabilogramStore, (s) => s.interpolatedPosition);
+export const isStabilogramReady = stabilogramStore.isReady;
+export const connectionStatus = derived(stabilogramStore, (s) => ({
+	ws: s.isWsConnected,
+	device: s.isDeviceConnected,
+	calibrated: s.isCalibrated
 }));

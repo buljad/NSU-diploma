@@ -1,6 +1,12 @@
 export interface DiagnosticSample {
   timestamp: number;
-  stage: 'parser' | 'server' | 'websocket' | 'kalman' | 'interpolator' | 'render';
+  stage:
+    | 'parser'
+    | 'server'
+    | 'websocket'
+    | 'kalman'
+    | 'interpolator'
+    | 'render';
   type: 'data' | 'error' | 'warning' | 'info';
   data: Record<string, any>;
   metadata?: Record<string, any>;
@@ -13,7 +19,7 @@ export interface DiagnosticStats {
   invalidPackets: number;
   outlierPackets: number;
   lastParserError?: string;
-  
+
   // Датчики
   sensorRanges: {
     d1: { min: number; max: number; current: number };
@@ -21,28 +27,28 @@ export interface DiagnosticStats {
     d3: { min: number; max: number; current: number };
     d4: { min: number; max: number; current: number };
   };
-  
+
   // Kalman фильтр
   kalmanResets: number;
   kalmanOutliers: number;
   filterUncertainty: number;
   lastKalmanReset?: string;
-  
+
   // Производительность
   packetRate: number;
   renderRate: number;
   latencyMs: number;
-  
+
   // Качество сигнала
   signalToNoise: number;
   stabilityIndex: number;
-  
+
   // Координаты
   positionJumps: number;
   maxJumpDistance: number;
   currentPosition: { x: number; y: number };
   currentVelocity: { x: number; y: number };
-  
+
   // Состояние
   isPlatformEmpty: boolean;
   isCalibrated: boolean;
@@ -53,24 +59,24 @@ export class DiagnosticsCollector {
   private samples: DiagnosticSample[] = [];
   private stats: DiagnosticStats;
   private readonly maxSamples = 1000;
-  
+
   // Zero-GC переменные для hot path
   private tempSample: DiagnosticSample;
-  
+
   // Для вычисления статистик
-  private lastPositions: Array<{x: number, y: number, t: number}> = [];
+  private lastPositions: Array<{ x: number; y: number; t: number }> = [];
   private readonly maxPositionHistory = 50;
-  
+
   constructor() {
     this.stats = this.createInitialStats();
-    
+
     // Предаллоцируем объект для hot path
     this.tempSample = {
       timestamp: 0,
-      stage: 'data',
+      stage: 'parser',
       type: 'data',
       data: {},
-      metadata: {}
+      metadata: {},
     };
   }
 
@@ -84,7 +90,7 @@ export class DiagnosticsCollector {
         d1: { min: Infinity, max: -Infinity, current: 0 },
         d2: { min: Infinity, max: -Infinity, current: 0 },
         d3: { min: Infinity, max: -Infinity, current: 0 },
-        d4: { min: Infinity, max: -Infinity, current: 0 }
+        d4: { min: Infinity, max: -Infinity, current: 0 },
       },
       kalmanResets: 0,
       kalmanOutliers: 0,
@@ -100,16 +106,16 @@ export class DiagnosticsCollector {
       currentVelocity: { x: 0, y: 0 },
       isPlatformEmpty: false,
       isCalibrated: false,
-      connectionState: 'disconnected'
+      connectionState: 'disconnected',
     };
   }
 
   // ✅ ZERO-GC метод для hot path (вызывается каждый пакет/кадр)
   logDataPoint(
-    stage: DiagnosticSample['stage'], 
-    key: string, 
+    stage: DiagnosticSample['stage'],
+    key: string,
     value: number,
-    metadata?: string
+    metadata?: string,
   ): void {
     // Обновляем статистики без аллокаций
     this.updateStats(stage, key, value, metadata);
@@ -120,23 +126,23 @@ export class DiagnosticsCollector {
     stage: DiagnosticSample['stage'],
     type: DiagnosticSample['type'],
     data: Record<string, any>,
-    metadata?: Record<string, any>
+    metadata?: Record<string, any>,
   ): void {
     const sample: DiagnosticSample = {
       timestamp: performance.now(),
       stage,
       type,
       data: { ...data },
-      metadata: metadata ? { ...metadata } : undefined
+      metadata: metadata ? { ...metadata } : undefined,
     };
-    
+
     this.samples.push(sample);
-    
+
     // Ограничиваем размер массива
     if (this.samples.length > this.maxSamples) {
       this.samples.shift();
     }
-    
+
     // Выводим критичные события в консоль
     if (type === 'error') {
       console.error(`🔥 [${stage.toUpperCase()}]`, data);
@@ -145,9 +151,14 @@ export class DiagnosticsCollector {
     }
   }
 
-  private updateStats(stage: string, key: string, value: number, metadata?: string): void {
+  private updateStats(
+    stage: string,
+    key: string,
+    value: number,
+    metadata?: string,
+  ): void {
     const now = performance.now();
-    
+
     switch (stage) {
       case 'parser':
         if (key === 'valid_packet') {
@@ -160,20 +171,26 @@ export class DiagnosticsCollector {
           this.stats.outlierPackets++;
         }
         break;
-        
+
       case 'server':
         if (key.startsWith('sensor_')) {
           const sensorKey = key.split('_')[1] as 'd1' | 'd2' | 'd3' | 'd4';
           if (this.stats.sensorRanges[sensorKey]) {
             this.stats.sensorRanges[sensorKey].current = value;
-            this.stats.sensorRanges[sensorKey].min = Math.min(this.stats.sensorRanges[sensorKey].min, value);
-            this.stats.sensorRanges[sensorKey].max = Math.max(this.stats.sensorRanges[sensorKey].max, value);
+            this.stats.sensorRanges[sensorKey].min = Math.min(
+              this.stats.sensorRanges[sensorKey].min,
+              value,
+            );
+            this.stats.sensorRanges[sensorKey].max = Math.max(
+              this.stats.sensorRanges[sensorKey].max,
+              value,
+            );
           }
         } else if (key === 'platform_empty') {
           this.stats.isPlatformEmpty = value === 1;
         }
         break;
-        
+
       case 'kalman':
         if (key === 'reset') {
           this.stats.kalmanResets++;
@@ -194,7 +211,7 @@ export class DiagnosticsCollector {
           this.stats.currentVelocity.y = value;
         }
         break;
-        
+
       case 'render':
         if (key === 'fps') {
           this.stats.renderRate = value;
@@ -207,42 +224,53 @@ export class DiagnosticsCollector {
 
   private updatePositionHistory(x: number, y: number, timestamp: number): void {
     this.lastPositions.push({ x, y, t: timestamp });
-    
+
     if (this.lastPositions.length > this.maxPositionHistory) {
       this.lastPositions.shift();
     }
-    
+
     // Вычисляем скачки позиции
     if (this.lastPositions.length > 1) {
       const prev = this.lastPositions[this.lastPositions.length - 2];
       const curr = this.lastPositions[this.lastPositions.length - 1];
-      
-      const jumpDistance = Math.sqrt((curr.x - prev.x) ** 2 + (curr.y - prev.y) ** 2);
-      
-      if (jumpDistance > 20) { // Порог для "скачка"
+
+      const jumpDistance = Math.sqrt(
+        (curr.x - prev.x) ** 2 + (curr.y - prev.y) ** 2,
+      );
+
+      if (jumpDistance > 20) {
+        // Порог для "скачка"
         this.stats.positionJumps++;
-        this.stats.maxJumpDistance = Math.max(this.stats.maxJumpDistance, jumpDistance);
+        this.stats.maxJumpDistance = Math.max(
+          this.stats.maxJumpDistance,
+          jumpDistance,
+        );
       }
     }
-    
+
     // Вычисляем индекс стабильности (дисперсия последних 10 позиций)
     if (this.lastPositions.length >= 10) {
       const recent = this.lastPositions.slice(-10);
       const avgX = recent.reduce((sum, p) => sum + p.x, 0) / recent.length;
       const avgY = recent.reduce((sum, p) => sum + p.y, 0) / recent.length;
-      
-      const variance = recent.reduce((sum, p) => {
-        return sum + (p.x - avgX) ** 2 + (p.y - avgY) ** 2;
-      }, 0) / recent.length;
-      
+
+      const variance =
+        recent.reduce((sum, p) => {
+          return sum + (p.x - avgX) ** 2 + (p.y - avgY) ** 2;
+        }, 0) / recent.length;
+
       this.stats.stabilityIndex = 1000 / (1 + Math.sqrt(variance)); // Чем больше - тем стабильнее
     }
   }
 
   // Обновление состояния соединения
-  updateConnectionState(ws: boolean, device: boolean, calibrated: boolean): void {
+  updateConnectionState(
+    ws: boolean,
+    device: boolean,
+    calibrated: boolean,
+  ): void {
     this.stats.isCalibrated = calibrated;
-    
+
     if (!ws) {
       this.stats.connectionState = 'ws_disconnected';
     } else if (!device) {
@@ -268,9 +296,7 @@ export class DiagnosticsCollector {
   }
 
   getErrorSamples(maxCount: number = 20): DiagnosticSample[] {
-    return this.samples
-      .filter(s => s.type === 'error')
-      .slice(-maxCount);
+    return this.samples.filter((s) => s.type === 'error').slice(-maxCount);
   }
 
   exportData(): {
@@ -281,7 +307,7 @@ export class DiagnosticsCollector {
     return {
       stats: this.getStats(),
       samples: [...this.samples],
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     };
   }
 
@@ -295,53 +321,76 @@ export class DiagnosticsCollector {
   generateDiagnosticReport(): string[] {
     const issues: string[] = [];
     const stats = this.stats;
-    
+
     // Проверяем качество соединения
     if (stats.packetRate < 30) {
-      issues.push(`🔴 Низкая частота пакетов: ${stats.packetRate.toFixed(1)} Гц (норма > 30)`);
+      issues.push(
+        `🔴 Низкая частота пакетов: ${stats.packetRate.toFixed(1)} Гц (норма > 30)`,
+      );
     }
-    
+
     if (stats.invalidPackets / Math.max(1, stats.totalPackets) > 0.05) {
-      issues.push(`🔴 Много поврежденных пакетов: ${(100 * stats.invalidPackets / Math.max(1, stats.totalPackets)).toFixed(1)}% (норма < 5%)`);
+      issues.push(
+        `🔴 Много поврежденных пакетов: ${((100 * stats.invalidPackets) / Math.max(1, stats.totalPackets)).toFixed(1)}% (норма < 5%)`,
+      );
     }
-    
+
     if (stats.outlierPackets > 50) {
-      issues.push(`🟡 Много выбросов датчиков: ${stats.outlierPackets} (возможен шум или неисправность)`);
+      issues.push(
+        `🟡 Много выбросов датчиков: ${stats.outlierPackets} (возможен шум или неисправность)`,
+      );
     }
-    
+
     if (stats.kalmanResets > 10) {
-      issues.push(`🟡 Частые сбросы фильтра: ${stats.kalmanResets} (нестабильный сигнал)`);
+      issues.push(
+        `🟡 Частые сбросы фильтра: ${stats.kalmanResets} (нестабильный сигнал)`,
+      );
     }
-    
+
     if (stats.positionJumps > 20) {
-      issues.push(`🔴 Телепортация точки: ${stats.positionJumps} скачков, макс. ${stats.maxJumpDistance.toFixed(1)}мм`);
+      issues.push(
+        `🔴 Телепортация точки: ${stats.positionJumps} скачков, макс. ${stats.maxJumpDistance.toFixed(1)}мм`,
+      );
     }
-    
+
     if (stats.stabilityIndex < 10 && !stats.isPlatformEmpty) {
-      issues.push(`🟡 Нестабильное позиционирование: индекс ${stats.stabilityIndex.toFixed(1)} (норма > 50)`);
+      issues.push(
+        `🟡 Нестабильное позиционирование: индекс ${stats.stabilityIndex.toFixed(1)} (норма > 50)`,
+      );
     }
-    
+
     if (stats.renderRate < 30) {
-      issues.push(`🟡 Низкий FPS рендеринга: ${stats.renderRate.toFixed(1)} (норма > 30)`);
+      issues.push(
+        `🟡 Низкий FPS рендеринга: ${stats.renderRate.toFixed(1)} (норма > 30)`,
+      );
     }
-    
+
     if (stats.latencyMs > 100) {
-      issues.push(`🟡 Высокая задержка: ${stats.latencyMs.toFixed(1)}мс (норма < 50)`);
+      issues.push(
+        `🟡 Высокая задержка: ${stats.latencyMs.toFixed(1)}мс (норма < 50)`,
+      );
     }
-    
+
     // Проверяем баланс датчиков
-    const sensors = [stats.sensorRanges.d1, stats.sensorRanges.d2, stats.sensorRanges.d3, stats.sensorRanges.d4];
+    const sensors = [
+      stats.sensorRanges.d1,
+      stats.sensorRanges.d2,
+      stats.sensorRanges.d3,
+      stats.sensorRanges.d4,
+    ];
     const avgRange = sensors.reduce((sum, s) => sum + (s.max - s.min), 0) / 4;
-    const unbalanced = sensors.some(s => Math.abs((s.max - s.min) - avgRange) > avgRange * 0.5);
-    
+    const unbalanced = sensors.some(
+      (s) => Math.abs(s.max - s.min - avgRange) > avgRange * 0.5,
+    );
+
     if (unbalanced && avgRange > 1000) {
       issues.push(`🟡 Дисбаланс датчиков (разброс диапазонов > 50%)`);
     }
-    
+
     if (issues.length === 0) {
       issues.push(`✅ Система работает стабильно`);
     }
-    
+
     return issues;
   }
 }

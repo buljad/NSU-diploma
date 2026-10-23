@@ -11,7 +11,7 @@
 //   • Обычный шар (BALL_NORMAL): удержание 1–1.5 сек (dwell)
 //     - Корзинка наезжает → состояние FALLING → DWELLING
 //     - Прогресс dwellProgress растёт каждый кадр
-//     - Корзинка ушла ИЛИ затряслась → DWELLING → FALLING (прогресс сброшен)
+//     - Корзинка ушла → DWELLING → FALLING (прогресс сброшен)
 //     - dwellProgress ≥ 1.0 → пойман!
 //
 //   • Быстрый шар (BALL_FAST): мгновенная ловля при перекрытии
@@ -93,9 +93,6 @@ export class CollisionDetector {
 		const bTop = bk.y - bHalfH;
 		const bBottom = bk.y + bHalfH;
 
-		// Если корзинка шатается — ловля заблокирована
-		const wobbling = basket.isWobbling();
-
 		// ── Итерация по ВСЕМ слотам пула ──
 		const balls = pool.balls;
 		const cap = pool.capacity;
@@ -146,7 +143,7 @@ export class CollisionDetector {
 			// Обработка пересечения
 			// ══════════════════════════════════════════
 
-			if (isOverlapping && !wobbling) {
+			if (isOverlapping) {
 				// ── Быстрый шар: мгновенная ловля ──
 				if (ball.ballType !== BALL_NORMAL) {
 					if (ball.state === BALL_STATE_FALLING) {
@@ -165,7 +162,6 @@ export class CollisionDetector {
 				if (ball.state === BALL_STATE_FALLING) {
 					// Первый кадр контакта: начинаем удержание
 					pool.startDwelling(i, now);
-					console.log(`🎯 Started dwelling on ball ${i}, target: ${ball.isTarget}`);
 					continue;
 				}
 
@@ -173,16 +169,9 @@ export class CollisionDetector {
 				// Накапливаем прогресс удержания
 				ball.dwellProgress += (dt * 1000) / this.effectiveDwellTimeMs;
 
-				// ✅ ОТЛАДКА: Логируем прогресс
-				if (ball.dwellProgress > 0.1) {
-					console.log(`🔄 Dwell progress: ${(ball.dwellProgress * 100).toFixed(0)}%`);
-				}
-
 				if (ball.dwellProgress >= 1) {
 					// ══ Шар пойман! ══
 					ball.dwellProgress = 1;
-
-					console.log(`🎉 Ball caught! Target: ${ball.isTarget}`);
 
 					if (ball.isTarget) {
 						score.onCatch(ball.x, ball.y, false);
@@ -193,9 +182,8 @@ export class CollisionDetector {
 					pool.markCaught(i);
 				}
 			} else {
-				// ── Нет пересечения ИЛИ корзинка шатается ──
+				// ── Нет пересечения ──
 				if (ball.state === BALL_STATE_DWELLING) {
-					console.log(`❌ Cancelled dwelling on ball ${i}`);
 					pool.cancelDwelling(i);
 				}
 			}

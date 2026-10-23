@@ -13,20 +13,20 @@ export interface Vector3D extends Vector2D {
  * Сырые данные с 4 тензодатчиков
  */
 export interface SensorData {
-  d1: number;  // Верхний левый датчик
-  d2: number;  // Верхний правый датчик
-  d3: number;  // Нижний правый датчик
-  d4: number;  // Нижний левый датчик
+  d1: number; // Верхний левый датчик
+  d2: number; // Верхний правый датчик
+  d3: number; // Нижний правый датчик
+  d4: number; // Нижний левый датчик
 }
 
 /**
  * Координаты центра давления (CoP)
  */
 export interface Coordinates {
-  x: number;   // Положение по X (мм)
-  y: number;   // Положение по Y (мм)
-  z: number;   // Резерв (всегда 0)
-  f: number;   // Суммарная сила (вес)
+  x: number; // Положение по X (мм)
+  y: number; // Положение по Y (мм)
+  z: number; // Резерв (всегда 0)
+  f: number; // Суммарная нагрузка в условных единицах (не кг и не Н)
 }
 
 export interface AxisConfiguration {
@@ -54,11 +54,11 @@ export interface CalibrationData {
 export interface StabilogramSample {
   /** Сырые данные с датчиков */
   sensors: SensorData;
-  /** Вычисленные координаты CoP (в единицах датчика) */
+  /** Вычисленные координаты CoP после вычитания нуля, в мм */
   raw: Coordinates;
   /** После калибровки и трансформации осей */
   centered: Coordinates;
-  /** После фильтрации (заглушка, фильтрация на клиенте) */
+  /** После серверного фильтра для отображения */
   filtered: Coordinates;
   /** Физические координаты в мм */
   mm: Vector2D;
@@ -68,6 +68,12 @@ export interface StabilogramSample {
   clientTime: number;
   /** Номер пакета */
   packetNumber: number;
+  /** Пригодность измерения для анализа; отсутствует у старых записей. */
+  isValid?: boolean;
+  /** Например not-calibrated, insufficient-load или calibrating. */
+  invalidReason?: string;
+  /** Время получения сервером (Unix, мс), отдельно от времени браузера. */
+  serverTime?: number;
 }
 
 export interface ParsedPacket {
@@ -95,7 +101,7 @@ export interface ParserStats {
 }
 
 // WebSocket message types
-export type ServerMessageType = 
+export type ServerMessageType =
   | 'DATA'
   | 'DATA_BATCH'
   | 'CONNECTED'
@@ -104,6 +110,10 @@ export type ServerMessageType =
   | 'CALIBRATION_STARTED'
   | 'CALIBRATION_PROGRESS'
   | 'CALIBRATION_COMPLETE'
+  | 'CALIBRATION_CANCELLED'
+  | 'SIGNAL_QUALITY'
+  | 'PERFORMANCE_UPDATED'
+  | 'SENSOR_DIAGNOSIS'
   | 'AXES_CONFIGURED'
   | 'PORTS_LIST'
   | 'ERROR'
@@ -115,6 +125,8 @@ export type ClientMessageType =
   | 'CALIBRATE_ZERO'
   | 'CONFIGURE_AXES'
   | 'LIST_PORTS'
+  | 'SET_PERFORMANCE'
+  | 'DIAGNOSE_SENSORS'
   | 'PING';
 
 export interface PortInfo {

@@ -1,19 +1,16 @@
 {
   "name": "stabilometer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "pnpm run --parallel dev",
-    "dev:client": "pnpm --filter @stabilometer/client dev",
-    "dev:server": "pnpm --filter @stabilometer/server dev",
-    "build": "pnpm run --parallel build",
-    "build:client": "pnpm --filter @stabilometer/client build",
-    "build:server": "pnpm --filter @stabilometer/server build",
-    "check": "pnpm --filter @stabilometer/client check",
-    "lint": "pnpm run --parallel lint",
-    "format": "prettier --write \"packages/*/src/**/*.{ts,svelte,css}\"",
-    "clean": "rm -rf packages/*/node_modules packages/*/.svelte-kit packages/*/dist"
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/start.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node scripts/test.mjs",
+    "package:windows": "node scripts/package.mjs",
+    "format": "prettier --write \"packages/*/src/**/*.{ts,svelte,css}\""
   },
   "devDependencies": {
     "@types/node": "^20.19.39",
@@ -22,7 +19,10 @@
     "typescript": "^5.4.2"
   },
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=20.19.0",
     "pnpm": ">=8.0.0"
+  },
+  "dependencies": {
+    "repomix": "^1.14.0"
   }
 }
